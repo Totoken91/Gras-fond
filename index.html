@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#3f0a14">
+<title>Gras-Fond</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bevan&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <div id="prompt"></div>
+  <div id="joy" class="touch"><div id="joyk"></div></div>
+  <button id="act" class="touch big"></button>
+  <div id="seatui" class="touch">
+    <div id="thr"><div id="thrk"></div><span class="t">Av.</span><span class="b">Ar.</span></div>
+    <div class="bal"><button id="vent">Chasser</button><button id="fill">Remplir</button></div>
+  </div>
+  <button id="lights" class="touch small">Phares</button>
+</div>
+<div id="start">
+  <div class="card">
+    <h1>Gras-Fond</h1>
+    <p class="sub">Prototype n° 1 · marcher dans La Truffe et la piloter</p>
+    <dl>
+      <dt>À pied</dt><dd>Z Q S D pour marcher, souris pour regarder, E pour s'asseoir aux commandes</dd>
+      <dt>Aux commandes</dt><dd>Z / S gaz, Q / D cap, ↑ ↓ assiette, Espace chasser, Maj remplir, L phares, E se lever</dd>
+      <dt>Téléphone</dt><dd>tiens-le en paysage : joystick à gauche, glisser à droite pour regarder, bouton d'action en bas à droite</dd>
+    </dl>
+    <button id="go">Embarquer</button>
+  </div>
+</div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
