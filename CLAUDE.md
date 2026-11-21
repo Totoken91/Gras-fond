@@ -5,7 +5,8 @@ Jeu de sous-marin Porkonia de Kenny (continuité « Fun », celle de Douzi). Vit
 ## Architecture
 - `src/main.js` : rendu, boucle, physique du sous-marin, pilote (marche / assis), animation de l'intérieur.
   Deux scènes : `outside` (monde, brouillard) puis `inside` (intérieur, ses propres lumières), dessinée par-dessus avec `clearDepth`. Le bloom s'applique au tout.
-- `src/sub.js` : intérieur de La Truffe (repère local, avant vers -z, plancher à y = -1.05), commandes 3D, collisions à pied (boîtes x/z), cadrans dessinés sur canvas.
+- `src/sub.js` : intérieur de La Truffe (repère local, avant vers -z, plancher à y = -1.05), commandes 3D (manche, télégraphe des machines = gaz, volants des ballasts, cadrans à aiguilles 3D), collisions à pied (boîtes x/z). `animateSub()` fait bouger tout l'intérieur.
+- `src/textures.js` : matières peintes en canvas (couleur + carte de normales + rugosité) : coque rivetée, tôle larmée, cuir capitonné, bois, peinture marteau, faces de cadrans, plaques.
 - `src/world.js` : relief `H(x, z)` (zone de 1 km, profondeur vers -z), décor instancié par cases de 100 m, poissons, lumière selon la profondeur, épave du Gras-Fond.
 - `src/input.js` : clavier, souris (pointer lock), tactile.
 

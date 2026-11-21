@@ -1,325 +1,405 @@
-// L'intérieur de La Truffe : trois pièces (poste de pilotage, salle des machines, soute),
-// les commandes en 3D qui bougent sous les mains, et les collisions pour marcher dedans.
-// Repère local : l'avant est vers -z, le plancher est à y = -1.05.
+// L'intérieur de La Truffe : poste de pilotage, salle des machines, soute.
+// Repère local : l'avant est vers -z, le plancher est à y = -1.05, la coque fait 1,75 m de rayon intérieur.
 import * as THREE from 'three';
-import { TAU, clamp, mulberry } from './noise.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { TAU, clamp, damp } from './noise.js';
+import { hullMaps, treadMaps, leatherMaps, woodMaps, brushedMaps, hammerMaps, dialFace, plateTex } from './textures.js';
 
 export const FLOOR = -1.05;
-export const EYE = 1.2;          // un citoyen Porko fait 1,30 m
-const R = 1.75;                 // rayon intérieur de la coque
-const Z_DOME = -5.6, Z_STERN = 6.4, BULK = [-2.8, 2.2], DOOR = 0.38;
+export const EYE = 1.2;                 // un citoyen Porko fait 1,30 m
+const R = 1.75, Z_DOME = -5.6, Z_STERN = 6.4, BULK = [-2.8, 2.2], DOOR = .4, DOOR_TOP = .55;
 
-// ---------------------------------------------------------------- textures peintes
-function canvasTex(w, h, draw, repeat) {
-  const c = document.createElement('canvas'); c.width = w; c.height = h;
-  draw(c.getContext('2d'), w, h);
-  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
-  if (repeat) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repeat[0], repeat[1]); }
-  return t;
+// ---------------------------------------------------------------- outils de modelage
+const V2 = (x, y) => new THREE.Vector2(x, y);
+const rbox = (w, h, d, r = .02, s = 3) => new RoundedBoxGeometry(w, h, d, s, Math.min(r, w / 2 - .001, h / 2 - .001, d / 2 - .001));
+const cyl = (r1, r2, h, s = 20, open = false) => new THREE.CylinderGeometry(r1, r2, h, s, 1, open);
+const sph = (r, a = 18, b = 12) => new THREE.SphereGeometry(r, a, b);
+const tor = (r, t, a = 10, b = 32, arc = TAU) => new THREE.TorusGeometry(r, t, a, b, arc);
+function mk(geo, mat, parent, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0) {
+  const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.rotation.set(rx, ry, rz); parent.add(m); return m;
 }
-function grime(g, w, h, n, a, seed) {
-  const r = mulberry(seed);
-  for (let i = 0; i < n; i++) {
-    const x = r() * w, y = r() * h, s = 4 + r() * 40;
-    const gr = g.createRadialGradient(x, y, 0, x, y, s);
-    gr.addColorStop(0, `rgba(60,35,20,${a * r()})`); gr.addColorStop(1, 'rgba(60,35,20,0)');
-    g.fillStyle = gr; g.fillRect(x - s, y - s, s * 2, s * 2);
-  }
+function grp(parent, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0) { const g = new THREE.Group(); g.position.set(x, y, z); g.rotation.set(rx, ry, rz); parent.add(g); return g; }
+function doorShape(w, top, bottom, pad = 0) {
+  const s = new THREE.Path(); s.moveTo(-w - pad, bottom); s.lineTo(w + pad, bottom); s.lineTo(w + pad, top); s.absarc(0, top, w + pad, 0, Math.PI); s.lineTo(-w - pad, bottom); return s;
 }
-function rivet(g, x, y, r) {
-  const gr = g.createRadialGradient(x - r * .3, y - r * .3, 0, x, y, r);
-  gr.addColorStop(0, 'rgba(255,248,230,.9)'); gr.addColorStop(.6, 'rgba(150,130,100,.8)'); gr.addColorStop(1, 'rgba(40,25,15,.8)');
-  g.fillStyle = gr; g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill();
-}
-const hullTex = () => canvasTex(1024, 256, (g, w, h) => {
-  // u = tour de la coque (0 = bas), v = longueur. Bas bordeaux, haut crème.
-  g.fillStyle = '#e8dbbb'; g.fillRect(0, 0, w, h);
-  g.fillStyle = '#7a1b2c'; g.fillRect(0, 0, w * .2, h); g.fillRect(w * .8, 0, w * .2, h);
-  g.fillStyle = '#c9963f'; g.fillRect(w * .2, 0, 6, h); g.fillRect(w * .8 - 6, 0, 6, h);
-  grime(g, w, h, 140, .18, 3);
-  g.strokeStyle = 'rgba(70,45,25,.45)'; g.lineWidth = 3;
-  for (let k = 0; k <= 12; k++) { g.beginPath(); g.moveTo(k * w / 12, 0); g.lineTo(k * w / 12, h); g.stroke(); }
-  g.beginPath(); g.moveTo(0, 2); g.lineTo(w, 2); g.stroke();
-  for (let k = 0; k <= 12; k++) for (let y = 14; y < h; y += 26) rivet(g, k * w / 12 + 8, y, 3.2);
-  for (let x = 8; x < w; x += 22) rivet(g, x, 10, 3.2);
-}, [1, 11]);
-const floorTex = () => canvasTex(256, 256, (g, w, h) => {
-  g.fillStyle = '#2b2622'; g.fillRect(0, 0, w, h);
-  for (let y = 0; y < h; y += 32) for (let x = 0; x < w; x += 32) {
-    const gr = g.createLinearGradient(x, y, x, y + 28); gr.addColorStop(0, '#6a5d4e'); gr.addColorStop(1, '#3b332b');
-    g.fillStyle = gr; g.fillRect(x + 3, y + 3, 26, 26);
-    g.fillStyle = '#1a1512'; for (let k = 0; k < 3; k++) g.fillRect(x + 7, y + 8 + k * 7, 18, 3);
-  }
-  grime(g, w, h, 30, .35, 9);
-}, [2.6, 12]);
-const woodTex = () => canvasTex(256, 256, (g, w, h) => {
-  g.fillStyle = '#9b6b3c'; g.fillRect(0, 0, w, h);
-  for (let y = 0; y < h; y += 64) { g.fillStyle = y % 128 ? '#8a5d33' : '#a8773f'; g.fillRect(0, y, w, 60); g.fillStyle = '#4a2f18'; g.fillRect(0, y + 60, w, 4); }
-  g.strokeStyle = 'rgba(70,40,20,.35)'; for (let i = 0; i < 40; i++) { const y = Math.random() * h; g.beginPath(); g.moveTo(0, y); g.bezierCurveTo(80, y + 6, 160, y - 6, 256, y + 3); g.stroke(); }
-  g.fillStyle = '#6d1526'; g.font = 'bold 44px serif'; g.textAlign = 'center'; g.fillText('PORT-COCHON', 128, 140);
-});
 
-// ---------------------------------------------------------------- construction
 export function buildSub(envMap) {
   const root = new THREE.Group();
+  const T = { hull: hullMaps(), tread: treadMaps(), leather: leatherMaps(), wood: woodMaps(), brush: brushedMaps(), green: hammerMaps('#2c4638'), red: hammerMaps('#6a1626'), cream: hammerMaps('#d9c9a2') };
+  for (const k of ['map', 'normalMap', 'roughnessMap']) T.hull[k].repeat.set(1, 10);
+  T.tread.map.repeat.set(3, 36); T.tread.normalMap.repeat.set(3, 36);
+  const std = o => new THREE.MeshStandardMaterial(Object.assign({ envMap, envMapIntensity: .4 }, o));
   const M = {
-    hull: new THREE.MeshStandardMaterial({ map: hullTex(), roughness: .7, metalness: .1, side: THREE.BackSide }),
-    paint: new THREE.MeshStandardMaterial({ color: 0x7a1b2c, roughness: .6, metalness: .15 }),
-    cream: new THREE.MeshStandardMaterial({ color: 0xe8dbbb, roughness: .7 }),
-    floor: new THREE.MeshStandardMaterial({ map: floorTex(), roughness: .85, metalness: .4 }),
-    brass: new THREE.MeshStandardMaterial({ color: 0xc99a48, roughness: .38, metalness: 1, envMap, envMapIntensity: .8 }),
-    copper: new THREE.MeshStandardMaterial({ color: 0xc77a4a, roughness: .35, metalness: 1, envMap }),
-    iron: new THREE.MeshStandardMaterial({ color: 0x3a3632, roughness: .55, metalness: .8, envMap }),
-    leather: new THREE.MeshStandardMaterial({ color: 0x8e2438, roughness: .45, metalness: 0 }),
-    rubber: new THREE.MeshStandardMaterial({ color: 0x1c1a19, roughness: .9 }),
-    wood: new THREE.MeshStandardMaterial({ map: woodTex(), roughness: .8 }),
-    glass: new THREE.MeshStandardMaterial({ color: 0xbfe8ff, roughness: .02, metalness: 0, transparent: true, opacity: .07, envMap, envMapIntensity: .6, depthWrite: false, side: THREE.DoubleSide }),
-    bulb: new THREE.MeshBasicMaterial({ color: 0xffd9a0 }),
-    redLamp: new THREE.MeshBasicMaterial({ color: 0x401010 }),
-    steel: new THREE.MeshStandardMaterial({ color: 0x9c9d98, roughness: .35, metalness: .9, envMap }),
-    pink: new THREE.MeshStandardMaterial({ color: 0xf4a8ba, roughness: .55 }),
-    beer: new THREE.MeshStandardMaterial({ color: 0xe08a1c, roughness: .15, emissive: 0x3a1800, transparent: true, opacity: .92 }),
-    foam: new THREE.MeshStandardMaterial({ color: 0xfff4dc, roughness: .9 }),
+    hull: std({ ...T.hull, metalness: .25, side: THREE.BackSide, normalScale: new THREE.Vector2(.8, .8) }),
+    floor: std({ ...T.tread, metalness: .75, roughness: .55 }),
+    brass: std({ color: 0xc99a48, metalness: 1, roughness: .32, roughnessMap: T.brush.roughnessMap }),
+    brassDark: std({ color: 0x8a6428, metalness: 1, roughness: .45 }),
+    copper: std({ color: 0xc0704a, metalness: 1, roughness: .34 }),
+    steel: std({ color: 0xa7a8a2, metalness: 1, roughness: .32, roughnessMap: T.brush.roughnessMap }),
+    iron: std({ color: 0x3b3834, metalness: .85, roughness: .5 }),
+    green: std({ ...T.green, metalness: .35, roughness: .45 }),
+    red: std({ ...T.red, metalness: .3, roughness: .42 }),
+    creamPaint: std({ ...T.cream, metalness: .2, roughness: .5 }),
+    leather: std({ ...T.leather, roughness: .42, metalness: 0, envMapIntensity: .3 }),
+    rubber: std({ color: 0x1b1918, roughness: .85, metalness: 0 }),
+    wood: std({ ...T.wood, roughness: .8, metalness: 0, envMapIntensity: .2 }),
+    glass: std({ color: 0xcfefff, roughness: .02, metalness: 0, transparent: true, opacity: .1, envMapIntensity: 1.1, depthWrite: false, side: THREE.DoubleSide }),
+    gaugeGlass: std({ color: 0xffffff, roughness: .05, metalness: 0, transparent: true, opacity: .06, envMapIntensity: .25, depthWrite: false }),
+    bulb: new THREE.MeshBasicMaterial({ color: 0xffe2b0 }),
+    black: std({ color: 0x141210, roughness: .6, metalness: .2 }),
+    pink: std({ color: 0xf4a8ba, roughness: .5, metalness: 0, envMapIntensity: .2 }),
+    beer: std({ color: 0xe08a1c, roughness: .1, emissive: 0x4a2200, transparent: true, opacity: .93 }),
+    foam: std({ color: 0xfff4dc, roughness: .9 }),
+    cable: [0x7a1b2c, 0x1d1d1d, 0xc9a23a, 0x2a4a7a].map(c => std({ color: c, roughness: .6, metalness: 0 })),
   };
-  const add = (geo, mat, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, parent = root) => {
-    const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.rotation.set(rx, ry, rz); parent.add(m); return m;
-  };
-  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
-  const cyl = (r1, r2, h, s = 16, open = false) => new THREE.CylinderGeometry(r1, r2, h, s, 1, open);
-
-  // coque, poupe, dôme vitré
-  const L = Z_STERN - Z_DOME;
-  const hullG = cyl(R, R, L, 40, true); hullG.rotateX(Math.PI / 2);
-  add(hullG, M.hull, 0, 0, (Z_DOME + Z_STERN) / 2);
-  const stern = new THREE.SphereGeometry(R, 32, 12, 0, TAU, 0, Math.PI / 2); stern.rotateX(Math.PI / 2);
-  add(stern, M.hull, 0, 0, Z_STERN);
-  const dome = new THREE.SphereGeometry(R * .995, 48, 20, 0, TAU, 0, Math.PI / 2); dome.rotateX(-Math.PI / 2);
-  const domeM = add(dome, M.glass, 0, 0, Z_DOME); domeM.renderOrder = 10;
-  add(new THREE.TorusGeometry(R - .02, .09, 10, 64), M.brass, 0, 0, Z_DOME);
-  for (const a of [.62]) { const r = R * Math.cos(a); add(new THREE.TorusGeometry(r, .035, 8, 48), M.brass, 0, 0, Z_DOME - R * Math.sin(a)); }
-  // plancher, membrures, tuyaux
-  const fl = new THREE.PlaneGeometry(2.7, L + 1); fl.rotateX(-Math.PI / 2);
-  add(fl, M.floor, 0, FLOOR, (Z_DOME + Z_STERN) / 2 + .5);
-  for (let z = -4.6; z < Z_STERN; z += 1.2) add(new THREE.TorusGeometry(R - .03, .055, 8, 40), M.iron, 0, 0, z);
-  for (const [x, y, r, mat] of [[.95, 1.32, .07, M.copper], [-.95, 1.32, .07, M.copper], [.62, 1.55, .045, M.brass], [-1.4, .55, .05, M.iron]]) {
-    const p = cyl(r, r, L - 1.4, 10); p.rotateX(Math.PI / 2); add(p, mat, x, y, (Z_DOME + Z_STERN) / 2 + .4);
-  }
-  // cloisons avec porte
-  for (const z of BULK) {
-    const s = new THREE.Shape(); s.absarc(0, 0, R, 0, TAU);
-    const hole = new THREE.Path(); hole.moveTo(-DOOR - .04, FLOOR); hole.lineTo(DOOR + .04, FLOOR); hole.lineTo(DOOR + .04, .55); hole.absarc(0, .55, DOOR + .04, 0, Math.PI); hole.lineTo(-DOOR - .04, FLOOR);
-    s.holes.push(hole);
-    const g = new THREE.ExtrudeGeometry(s, { depth: .08, bevelEnabled: false, curveSegments: 32 }); g.translate(0, 0, -.04);
-    add(g, M.paint, 0, 0, z);
-    const fr = new THREE.Shape(); fr.moveTo(-DOOR - .12, FLOOR); fr.lineTo(DOOR + .12, FLOOR); fr.lineTo(DOOR + .12, .55); fr.absarc(0, .55, DOOR + .12, 0, Math.PI); fr.lineTo(-DOOR - .12, FLOOR);
-    fr.holes.push(hole);
-    const fg = new THREE.ExtrudeGeometry(fr, { depth: .16, bevelEnabled: false, curveSegments: 24 }); fg.translate(0, 0, -.08);
-    add(fg, M.brass, 0, 0, z);
-    // porte étanche ouverte, rabattue sur le côté
-    const dg = new THREE.Shape(); dg.moveTo(-DOOR, FLOOR + .02); dg.lineTo(DOOR, FLOOR + .02); dg.lineTo(DOOR, .55); dg.absarc(0, .55, DOOR, 0, Math.PI); dg.lineTo(-DOOR, FLOOR + .02);
-    const dgeo = new THREE.ExtrudeGeometry(dg, { depth: .06, bevelEnabled: false }); dgeo.translate(DOOR, 0, 0);
-    const door = add(dgeo, M.paint, -DOOR - .12, 0, z + .12, 0, -1.75, 0);
-    add(new THREE.TorusGeometry(.14, .025, 6, 16), M.brass, DOOR, .1, .07, 0, 0, 0, door);
-  }
-  // lampes (une par pièce) : ampoule, cage, et la lumière
+  const C = { needles: {}, lamps: {}, toggles: [] };
   const lights = [];
-  for (const [z, col, int] of [[-3.6, 0xffc98a, 2.2], [-.4, 0xffc070, 4.2], [4.2, 0xffb868, 3.6]]) {
-    const g = new THREE.Group(); g.position.set(0, 1.5, z); root.add(g);
-    add(new THREE.SphereGeometry(.07, 12, 8), M.bulb, 0, -.08, 0, 0, 0, 0, g);
-    add(cyl(.11, .11, .2, 8, true), new THREE.MeshStandardMaterial({ color: 0x2a2622, wireframe: true }), 0, -.08, 0, 0, 0, 0, g);
-    add(cyl(.13, .05, .06, 12), M.iron, 0, .04, 0, 0, 0, 0, g);
-    const pl = new THREE.PointLight(col, int, 7, 1.6); pl.position.set(0, -.15, 0); g.add(pl); lights.push(pl);
+
+  // ---------------------------------------------------------------- coque, membrures, dôme
+  const L = Z_STERN - Z_DOME, midZ = (Z_DOME + Z_STERN) / 2;
+  const hullG = cyl(R, R, L, 64, true); hullG.rotateX(Math.PI / 2); mk(hullG, M.hull, root, 0, 0, midZ);
+  const stern = new THREE.SphereGeometry(R, 48, 16, 0, TAU, 0, Math.PI / 2); stern.rotateX(Math.PI / 2); mk(stern, std({ ...T.red, metalness: .3, roughness: .45, side: THREE.BackSide }), root, 0, 0, Z_STERN);
+  const frameProfile = [V2(R + .01, -.045), V2(R - .07, -.045), V2(R - .07, -.012), V2(R - .14, -.012), V2(R - .14, -.032), V2(R - .155, -.032), V2(R - .155, .032), V2(R - .14, .032), V2(R - .14, .012), V2(R - .07, .012), V2(R - .07, .045), V2(R + .01, .045)];
+  const frameG = new THREE.LatheGeometry(frameProfile, 64); frameG.rotateX(Math.PI / 2);
+  for (let z = -4.8; z < Z_STERN - .3; z += 1.2) if (Math.abs(z - BULK[0]) > .3 && Math.abs(z - BULK[1]) > .3) mk(frameG, M.iron, root, 0, 0, z);
+  // dôme vitré et son cadre boulonné
+  const domeG = new THREE.SphereGeometry(R * .995, 64, 24, 0, TAU, 0, Math.PI / 2); domeG.rotateX(-Math.PI / 2);
+  mk(domeG, M.glass, root, 0, 0, Z_DOME).renderOrder = 10;
+  mk(tor(R - .02, .11, 16, 96), M.brass, root, 0, 0, Z_DOME);
+  mk(tor(R - .13, .035, 10, 96), M.brassDark, root, 0, 0, Z_DOME - .05);
+  const boltG = cyl(.022, .022, .03, 6);
+  for (let k = 0; k < 36; k++) { const a = k / 36 * TAU; mk(boltG, M.steel, root, Math.cos(a) * (R - .13), Math.sin(a) * (R - .13), Z_DOME + .09, Math.PI / 2); }
+  // plancher : tôle larmée + plinthes
+  const floorG = new THREE.PlaneGeometry(2.6, L + 1.6); floorG.rotateX(-Math.PI / 2); mk(floorG, M.floor, root, 0, FLOOR, midZ + .6);
+  for (const sx of [-1, 1]) mk(rbox(.06, .14, L + .4, .02), M.brass, root, sx * 1.3, FLOOR + .07, midZ + .3);
+  // plafond : chemin de câbles, tuyaux à brides, vannes
+  const tray = grp(root, 0, 1.5, midZ - .2);
+  mk(rbox(.5, .04, L - 1.2, .01), M.iron, tray, 0, .05, 0);
+  for (const sx of [-1, 1]) mk(rbox(.03, .1, L - 1.2, .01), M.iron, tray, sx * .25, 0, 0);
+  for (let i = 0; i < 4; i++) { const c = cyl(.022, .022, L - 1.3, 10); c.rotateX(Math.PI / 2); mk(c, M.cable[i], tray, -.15 + i * .1, 0, 0); }
+  const pipeRun = (x, y, r, mat) => {
+    const p = cyl(r, r, L - .9, 18); p.rotateX(Math.PI / 2); mk(p, mat, root, x, y, midZ);
+    for (let z = Z_DOME + 1.0; z < Z_STERN - .6; z += 1.2) { mk(tor(r + .012, .014, 8, 24), M.brassDark, root, x, y, z); mk(cyl(r + .025, r + .025, .035, 18), mat, root, x, y, z, Math.PI / 2); }
+    for (let z = Z_DOME + 1.8; z < Z_STERN - .6; z += 2.8) { mk(cyl(.012, .012, .1, 8), M.steel, root, x, y - r - .05, z); const w = grp(root, x, y - r - .1, z, Math.PI / 2); mk(tor(.06, .009, 6, 18), M.red, w); for (let k = 0; k < 3; k++) mk(cyl(.006, .006, .12, 5), M.red, w, 0, 0, 0, 0, 0, k * Math.PI / 3); }
+  };
+  pipeRun(.95, 1.25, .065, M.copper); pipeRun(-.95, 1.25, .065, M.copper); pipeRun(1.28, .7, .045, M.steel); pipeRun(-1.32, .45, .05, M.green);
+  // lampes en cage (une par pièce)
+  const lamp = (z, col, inten) => {
+    const g = grp(root, 0, 1.46, z);
+    mk(cyl(.12, .14, .05, 24), M.iron, g); mk(cyl(.04, .05, .06, 12), M.brass, g, 0, -.05, 0);
+    mk(sph(.065, 16, 12), M.bulb, g, 0, -.14, 0);
+    mk(tor(.105, .008, 6, 24), M.iron, g, 0, -.2, 0, Math.PI / 2);
+    for (let k = 0; k < 4; k++) { const a = grp(g, 0, -.1, 0, 0, k * Math.PI / 2, 0); mk(tor(.105, .007, 6, 16, Math.PI / 2), M.iron, a, 0, 0, 0, 0, 0, -Math.PI / 2); }
+    const pl = new THREE.PointLight(col, inten, 8, 1.5); pl.position.set(0, -.2, 0); g.add(pl); lights.push(pl); return g;
+  };
+  lamp(-3.55, 0xffcf96, 3); lamp(-.3, 0xffc27a, 6); lamp(4.2, 0xffbb70, 5);
+
+  // ---------------------------------------------------------------- cloisons étanches
+  for (const z of BULK) {
+    const s = new THREE.Shape(); s.absarc(0, 0, R + .02, 0, TAU); s.holes.push(doorShape(DOOR, DOOR_TOP, FLOOR - .01, .03));
+    const bg = new THREE.ExtrudeGeometry(s, { depth: .06, bevelEnabled: false, curveSegments: 48 }); bg.translate(0, 0, -.03);
+    mk(bg, M.red, root, 0, 0, z);
+    const fr = new THREE.Shape(), wi = DOOR + .03, wo = DOOR + .14;
+    fr.moveTo(-wo, FLOOR); fr.lineTo(-wi, FLOOR); fr.lineTo(-wi, DOOR_TOP); fr.absarc(0, DOOR_TOP, wi, Math.PI, 0, true); fr.lineTo(wi, FLOOR); fr.lineTo(wo, FLOOR); fr.lineTo(wo, DOOR_TOP); fr.absarc(0, DOOR_TOP, wo, 0, Math.PI, false); fr.lineTo(-wo, FLOOR);
+    const fg = new THREE.ExtrudeGeometry(fr, { depth: .14, bevelEnabled: true, bevelSize: .015, bevelThickness: .015, bevelSegments: 2, curveSegments: 32 }); fg.translate(0, 0, -.07);
+    mk(fg, M.brass, root, 0, 0, z);
+    for (let k = 0; k < 7; k++) { const a = Math.PI * k / 6, x = Math.cos(a) * (DOOR + .09), y = DOOR_TOP + Math.sin(a) * (DOOR + .09); for (const sz of [-1, 1]) mk(rbox(.05, .05, .04, .01), M.steel, root, x, y, z + sz * .095); }
+    mk(rbox(DOOR * 2 + .1, .1, .22, .02), M.brassDark, root, 0, FLOOR + .05, z);
+    // porte ouverte, rabattue contre la cloison, avec son volant
+    const dg = new THREE.Shape(); dg.moveTo(-DOOR, FLOOR + .1); dg.lineTo(DOOR, FLOOR + .1); dg.lineTo(DOOR, DOOR_TOP); dg.absarc(0, DOOR_TOP, DOOR, 0, Math.PI); dg.lineTo(-DOOR, FLOOR + .1);
+    const dgeo = new THREE.ExtrudeGeometry(dg, { depth: .07, bevelEnabled: true, bevelSize: .015, bevelThickness: .015, bevelSegments: 2 }); dgeo.translate(DOOR, 0, 0);
+    const door = grp(root, -DOOR - .16, 0, z + .1, 0, -1.62, 0);
+    mk(dgeo, M.red, door);
+    const wh = grp(door, DOOR, .15, .1);
+    mk(tor(.13, .015, 8, 28), M.brass, wh); mk(cyl(.025, .025, .06, 12), M.brass, wh, 0, 0, -.02, Math.PI / 2);
+    for (let k = 0; k < 3; k++) mk(cyl(.008, .008, .26, 6), M.brass, wh, 0, 0, 0, 0, 0, k * Math.PI / 3);
+    for (const y of [FLOOR + .35, DOOR_TOP - .05]) mk(cyl(.035, .035, .14, 12), M.steel, root, -DOOR - .16, y, z + .1);
   }
 
-  // ------------------------------------------------ poste de pilotage
-  const C = {};
-  // fauteuil
-  const seat = new THREE.Group(); seat.position.set(0, FLOOR, -4.15); root.add(seat);
-  add(cyl(.08, .12, .38, 10), M.iron, 0, .19, 0, 0, 0, 0, seat);
-  add(new THREE.BoxGeometry(.6, .12, .55), M.leather, 0, .44, 0, 0, 0, 0, seat);
-  add(new THREE.BoxGeometry(.6, .7, .12), M.leather, 0, .82, .3, -.15, 0, 0, seat);
-  add(new THREE.BoxGeometry(.36, .2, .1), M.leather, 0, 1.24, .37, -.15, 0, 0, seat);
-  for (const x of [-.33, .33]) add(new THREE.BoxGeometry(.07, .06, .45), M.brass, x, .62, .02, 0, 0, 0, seat);
-  // console
-  add(box(2.3, .6, .7), M.paint, 0, FLOOR + .3, -5.25);
-  const dashCanvas = document.createElement('canvas'); dashCanvas.width = 1024; dashCanvas.height = 300;
-  const dashTex = new THREE.CanvasTexture(dashCanvas); dashTex.colorSpace = THREE.SRGBColorSpace; dashTex.anisotropy = 8;
-  const dashM = new THREE.MeshStandardMaterial({ map: dashTex, emissiveMap: dashTex, emissive: 0xffffff, emissiveIntensity: .32, roughness: .5 });
-  add(new THREE.PlaneGeometry(1.5, .44), dashM, 0, FLOOR + .64, -4.98, -1.12, 0, 0);
-  add(box(1.58, .52, .03), M.brass, 0, FLOOR + .625, -5.0, -1.12 - Math.PI / 2 + Math.PI / 2, 0, 0).position.set(0, FLOOR + .628, -5.0);
-  // sonar CRT
-  const sonCanvas = document.createElement('canvas'); sonCanvas.width = sonCanvas.height = 256;
-  const sonTex = new THREE.CanvasTexture(sonCanvas); sonTex.colorSpace = THREE.SRGBColorSpace;
-  const crt = new THREE.Group(); crt.position.set(.82, FLOOR + .72, -4.95); crt.rotation.set(-.5, -.45, 0); crt.scale.setScalar(.8); root.add(crt);
-  add(box(.4, .36, .3), M.iron, 0, 0, .05, 0, 0, 0, crt);
-  add(new THREE.CircleGeometry(.15, 32), new THREE.MeshBasicMaterial({ map: sonTex }), 0, 0, .201, 0, 0, 0, crt);
-  // manche
-  const stick = new THREE.Group(); stick.position.set(0, FLOOR + .02, -4.68); root.add(stick);
-  add(new THREE.ConeGeometry(.12, .16, 12), M.rubber, 0, .08, 0, 0, 0, 0, root).position.set(0, FLOOR + .08, -4.68);
-  add(cyl(.022, .022, .5, 8), M.steel, 0, .25, 0, 0, 0, 0, stick);
-  add(new THREE.CapsuleGeometry(.04, .12, 4, 10), M.leather, 0, .55, 0, 0, 0, 0, stick);
-  add(new THREE.SphereGeometry(.025, 8, 6), new THREE.MeshBasicMaterial({ color: 0xff3a30 }), 0, .63, -.02, 0, 0, 0, stick);
+  // ---------------------------------------------------------------- instruments
+  const gauge = (parent, x, y, z, r, opts, key) => {
+    const g = grp(parent, x, y, z);
+    mk(cyl(r * 1.16, r * 1.2, .05, 32), M.brass, g, 0, 0, -.01, Math.PI / 2);
+    mk(tor(r * 1.08, r * .1, 12, 40), M.brass, g, 0, 0, .018);
+    const face = dialFace(opts);
+    mk(new THREE.CircleGeometry(r, 40), std({ map: face, emissiveMap: face, emissive: 0xfff0d8, emissiveIntensity: .07, roughness: .7, metalness: 0 }), g, 0, 0, .017);
+    const n = grp(g, 0, 0, .024);
+    const ng = new THREE.Shape(); ng.moveTo(-r * .03, -r * .18); ng.lineTo(r * .03, -r * .18); ng.lineTo(r * .008, r * .82); ng.lineTo(-r * .008, r * .82); ng.lineTo(-r * .03, -r * .18);
+    mk(new THREE.ShapeGeometry(ng), new THREE.MeshBasicMaterial({ color: 0x1a1210 }), n);
+    mk(sph(r * .07, 10, 8), M.brass, n, 0, 0, .004);
+    const gl = new THREE.SphereGeometry(r * 1.02, 32, 8, 0, TAU, 0, Math.PI / 2); gl.rotateX(Math.PI / 2); gl.scale(1, 1, .22);
+    mk(gl, M.gaugeGlass, g, 0, 0, .02).renderOrder = 11;
+    if (key) C.needles[key] = n;
+    return g;
+  };
+  const toggle = (parent, x, y, z, on) => {
+    const g = grp(parent, x, y, z);
+    mk(rbox(.045, .07, .015, .005), M.brassDark, g); mk(cyl(.012, .012, .012, 12), M.iron, g, 0, 0, .012, Math.PI / 2);
+    const lev = grp(g, 0, 0, .015); mk(cyl(.006, .004, .055, 8), M.iron, lev, 0, .027, 0); mk(sph(.01, 8, 6), M.black, lev, 0, .055, 0);
+    lev.rotation.x = on ? .5 : -.5; C.toggles.push(lev); return lev;
+  };
+  const indicator = (parent, x, y, z, color, key) => {
+    mk(cyl(.026, .026, .02, 16), M.brass, parent, x, y, z, Math.PI / 2);
+    const m = mk(sph(.018, 12, 8), new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(.25) }), parent, x, y, z + .012);
+    m.userData.on = new THREE.Color(color); m.userData.off = new THREE.Color(color).multiplyScalar(.18); if (key) C.lamps[key] = m; return m;
+  };
+  const plate = (parent, text, x, y, z, w, h, rx = 0, ry = 0) => mk(new THREE.PlaneGeometry(w, h), std({ map: plateTex(text), metalness: .8, roughness: .35 }), parent, x, y, z, rx, ry);
+
+  // ---------------------------------------------------------------- poste de pilotage
+  mk(rbox(2.5, .56, .62, .05), M.red, root, 0, FLOOR + .28, -5.27);
+  mk(rbox(2.52, .04, .66, .015), M.brass, root, 0, FLOOR + .57, -5.27);
+  plate(root, 'LA TRUFFE', 0, FLOOR + .3, -4.955, .5, .09);
+  const panel = grp(root, 0, FLOOR + .72, -5.02, -1.05);
+  mk(rbox(1.92, .56, .07, .03), M.black, panel, 0, 0, -.02);
+  mk(rbox(1.98, .6, .05, .03), M.brass, panel, 0, 0, -.045);
+  gauge(panel, -.62, .05, .02, .15, { label: 'Profondeur', labels: ['0', '40', '80', '120', '160', '200', '240'], red: [160 / 240, 1], ticks: 12, sub: 'mètres' }, 'depth');
+  gauge(panel, -.18, .06, .02, .115, { label: 'Coque', labels: ['0', '50', '100'], red: [0, .3] }, 'hull');
+  gauge(panel, .2, .06, .02, .115, { label: 'Batterie', labels: ['0', '50', '100'], red: [0, .2] }, 'batt');
+  gauge(panel, .58, .06, .02, .115, { label: 'Oxygène', labels: ['0', '50', '100'], red: [0, .2] }, 'o2');
+  // compteur de profondeur à rouleaux
+  const ctrC = document.createElement('canvas'); ctrC.width = 256; ctrC.height = 72;
+  const ctrT = new THREE.CanvasTexture(ctrC); ctrT.colorSpace = THREE.SRGBColorSpace;
+  mk(rbox(.2, .065, .02, .008), M.brass, panel, -.62, -.18, .015);
+  mk(new THREE.PlaneGeometry(.17, .048), new THREE.MeshBasicMaterial({ map: ctrT }), panel, -.62, -.18, .027);
+  // interrupteurs et voyants
+  for (let i = 0; i < 5; i++) { const lv = toggle(panel, -.28 + i * .13, -.19, .02, i !== 0); if (i === 0) C.lightsToggle = lv; }
+  indicator(panel, -.82, .2, .02, 0x6dff7a, 'power'); indicator(panel, -.72, .2, .02, 0xffb43a, 'lights');
+  indicator(panel, .82, .2, .02, 0xff3020, 'alarm'); indicator(panel, .72, .2, .02, 0x6ad8ff, 'surface');
+  plate(panel, 'COMMANDES', .34, .23, .02, .3, .05);
+  // sonar à écran cathodique, sur l'aile droite
+  const sonC = document.createElement('canvas'); sonC.width = sonC.height = 256;
+  const sonT = new THREE.CanvasTexture(sonC); sonT.colorSpace = THREE.SRGBColorSpace;
+  const crt = grp(root, 1.02, FLOOR + .76, -4.95, -.4, -.62, 0);
+  mk(rbox(.44, .4, .36, .05), M.creamPaint, crt, 0, 0, -.05);
+  mk(tor(.155, .025, 10, 40), M.brass, crt, 0, .02, .135);
+  mk(new THREE.CircleGeometry(.155, 40), new THREE.MeshBasicMaterial({ map: sonT }), crt, 0, .02, .128);
+  const crtGl = new THREE.SphereGeometry(.16, 32, 8, 0, TAU, 0, Math.PI / 2); crtGl.rotateX(Math.PI / 2); crtGl.scale(1, 1, .25); mk(crtGl, M.gaugeGlass, crt, 0, .02, .13).renderOrder = 11;
+  for (const x of [-.13, .13]) mk(cyl(.022, .022, .03, 16), M.iron, crt, x, -.15, .13, Math.PI / 2);
+  const sonGlow = new THREE.PointLight(0x5dff9a, .6, 1.6, 2); sonGlow.position.set(0, 0, .35); crt.add(sonGlow);
+  // fauteuil pivotant
+  const seat = grp(root, 0, FLOOR, -3.95);
+  for (let k = 0; k < 5; k++) { const leg = grp(seat, 0, .05, 0, 0, k / 5 * TAU, 0); mk(rbox(.05, .04, .3, .015), M.iron, leg, 0, 0, .15); mk(sph(.03, 10, 8), M.rubber, leg, 0, -.02, .3); }
+  mk(cyl(.035, .045, .38, 16), M.steel, seat, 0, .24, 0); mk(cyl(.07, .07, .05, 20), M.iron, seat, 0, .43, 0);
+  mk(rbox(.6, .12, .56, .05, 4), M.leather, seat, 0, .5, 0);
+  const back = grp(seat, 0, .55, .28, -.14);
+  mk(rbox(.58, .72, .12, .05, 4), M.leather, back, 0, .36, 0); mk(rbox(.36, .2, .1, .04, 4), M.leather, back, 0, .82, -.01);
+  mk(rbox(.62, .74, .03, .02), M.brassDark, back, 0, .36, .065);
+  for (const sx of [-1, 1]) { mk(rbox(.08, .07, .42, .03, 3), M.leather, seat, sx * .34, .72, .02); mk(cyl(.012, .012, .2, 8), M.brass, seat, sx * .34, .61, -.12); mk(cyl(.012, .012, .2, 8), M.brass, seat, sx * .34, .61, .16); }
+  // manche à soufflet
+  const bellows = []; for (let i = 0; i <= 8; i++) bellows.push(V2(i % 2 ? .07 : .095 - i * .004, i * .018));
+  mk(new THREE.LatheGeometry(bellows, 20), M.rubber, root, 0, FLOOR + .03, -4.5);
+  mk(cyl(.12, .14, .03, 24), M.brassDark, root, 0, FLOOR + .015, -4.5);
+  const stick = grp(root, 0, FLOOR + .12, -4.5);
+  mk(cyl(.018, .022, .42, 12), M.steel, stick, 0, .21, 0);
+  mk(new THREE.CapsuleGeometry(.038, .13, 6, 14), M.leather, stick, 0, .5, 0, -.15);
+  mk(sph(.024, 12, 8), new THREE.MeshBasicMaterial({ color: 0xff3a2a }), stick, 0, .59, -.015);
+  mk(rbox(.02, .05, .02, .006), M.steel, stick, 0, .47, -.04, .3);
   C.stick = stick;
-  // manette des gaz (à droite)
-  add(box(.16, .34, .5), M.iron, .48, FLOOR + .5, -4.35);
-  add(box(.04, .02, .42), M.brass, .48, FLOOR + .675, -4.35);
-  const thr = new THREE.Group(); thr.position.set(.48, FLOOR + .66, -4.35); root.add(thr);
-  add(cyl(.016, .016, .32, 8), M.steel, 0, .16, 0, 0, 0, 0, thr);
-  add(new THREE.SphereGeometry(.055, 14, 10), M.leather, 0, .34, 0, 0, 0, 0, thr);
-  C.thr = thr;
-  // volant des ballasts (à gauche) et son tube de niveau
-  const wheel = new THREE.Group(); wheel.position.set(-.5, FLOOR + .78, -4.5); wheel.rotation.y = Math.PI / 2 - .3; root.add(wheel);
-  add(new THREE.TorusGeometry(.15, .018, 8, 28), M.brass, 0, 0, 0, 0, 0, 0, wheel);
-  for (let k = 0; k < 3; k++) add(cyl(.01, .01, .3, 6), M.brass, 0, 0, 0, 0, 0, k * Math.PI / 3, wheel);
-  add(cyl(.05, .05, .7, 12), M.iron, -.5, FLOOR + .35, -4.5);
-  C.wheel = wheel;
-  const tube = add(cyl(.045, .045, .5, 16, true), M.glass, -.78, FLOOR + .95, -4.62); tube.renderOrder = 9;
-  const water = add(cyl(.04, .04, 1, 16), new THREE.MeshStandardMaterial({ color: 0x3aa8d8, emissive: 0x0a3a55, roughness: .1 }), -.78, FLOOR + .7, -4.62);
-  C.water = water;
-  // la pinte (niveau à bulle) et le cochon à ressort, sur la console
-  const pint = new THREE.Group(); pint.position.set(-.72, FLOOR + .62, -5.0); root.add(pint);
-  const pg = new THREE.LatheGeometry([[0, 0], [.045, 0], [.05, .005], [.055, .17], [.0555, .175]].map(p => new THREE.Vector2(p[0], p[1])), 20);
-  add(pg, M.glass, 0, 0, 0, 0, 0, 0, pint).renderOrder = 9;
-  const liquid = new THREE.Group(); liquid.position.y = .005; pint.add(liquid);
-  add(cyl(.047, .043, .13, 16), M.beer, 0, .065, 0, 0, 0, 0, liquid);
-  add(cyl(.05, .048, .025, 16), M.foam, 0, .14, 0, 0, 0, 0, liquid);
-  add(new THREE.TorusGeometry(.04, .008, 6, 14, Math.PI), M.glass, .062, .09, 0, 0, 0, -Math.PI / 2, pint);
+  // télégraphe des machines (la manette des gaz), à droite
+  const tel = grp(root, .78, FLOOR, -4.62);
+  mk(cyl(.12, .15, .05, 24), M.brassDark, tel, 0, .025, 0); mk(cyl(.045, .06, .52, 20), M.brass, tel, 0, .3, 0);
+  const drum = grp(tel, 0, .7, 0, 0, -.85, 0);
+  mk(cyl(.17, .17, .1, 40), M.brass, drum, 0, 0, 0, Math.PI / 2);
+  const tf = document.createElement('canvas'); tf.width = tf.height = 256;
+  { const g = tf.getContext('2d'), r = 128; const gr = g.createRadialGradient(r, r * .8, 8, r, r, r); gr.addColorStop(0, '#fbf3df'); gr.addColorStop(1, '#d9c497'); g.fillStyle = gr; g.fillRect(0, 0, 256, 256);
+    g.translate(r, r); g.textAlign = 'center'; g.textBaseline = 'middle';
+    for (const [t, a, c] of [['AVANT', .9, '#6d1526'], ['STOP', 0, '#1a1210'], ['ARRIÈRE', -.9, '#2a4a7a']]) { g.save(); g.rotate(-a); g.fillStyle = c; g.font = '700 22px "Barlow Condensed",Arial Narrow,sans-serif'; g.fillText(t, 0, -r * .72); g.fillRect(-2, -r * .93, 4, 18); g.restore(); }
+    g.fillStyle = '#5b1020'; g.font = '700 19px "Barlow Condensed",sans-serif'; g.fillText('MACHINES', 0, r * .42); }
+  const tft = new THREE.CanvasTexture(tf); tft.colorSpace = THREE.SRGBColorSpace;
+  mk(new THREE.CircleGeometry(.15, 40), std({ map: tft, emissiveMap: tft, emissive: 0xffffff, emissiveIntensity: .06, roughness: .7, metalness: 0 }), drum, 0, 0, .051);
+  const tgl = new THREE.SphereGeometry(.152, 32, 8, 0, TAU, 0, Math.PI / 2); tgl.rotateX(Math.PI / 2); tgl.scale(1, 1, .2); mk(tgl, M.gaugeGlass, drum, 0, 0, .05).renderOrder = 11;
+  const hnd = grp(drum, 0, 0, .085);
+  mk(rbox(.03, .24, .02, .008), M.brass, hnd, 0, .11, 0); mk(cyl(.025, .025, .03, 16), M.brass, hnd, 0, 0, 0, Math.PI / 2);
+  mk(new THREE.CapsuleGeometry(.025, .08, 4, 10), M.leather, hnd, 0, .25, .02, 0, 0, Math.PI / 2);
+  C.thr = hnd;
+  // tableau des ballasts, à gauche : deux volants et le tube de niveau
+  const bp = grp(root, -1.05, FLOOR + .9, -4.5, 0, Math.PI / 2 - .32, 0);
+  mk(rbox(.62, .62, .05, .025), M.creamPaint, bp, 0, 0, -.02); mk(rbox(.66, .66, .03, .025), M.brass, bp, 0, 0, -.045);
+  const wheel = (x, col) => { const w = grp(bp, x, -.12, .07); mk(tor(.1, .014, 8, 28), col, w); mk(cyl(.022, .022, .05, 12), M.brass, w, 0, 0, -.02, Math.PI / 2); for (let k = 0; k < 3; k++) mk(cyl(.007, .007, .2, 6), col, w, 0, 0, 0, 0, 0, k * Math.PI / 3); mk(cyl(.015, .015, .09, 10), M.steel, bp, x, -.12, .025, Math.PI / 2); return w; };
+  C.wheelFill = wheel(-.15, std({ color: 0x9a1e24, metalness: .3, roughness: .4 })); C.wheelVent = wheel(.15, std({ color: 0x2f6a3c, metalness: .3, roughness: .4 }));
+  plate(bp, 'REMPLIR', -.15, -.27, .005, .2, .04); plate(bp, 'CHASSER', .15, -.27, .005, .2, .04);
+  mk(cyl(.035, .035, .34, 20, true), M.gaugeGlass, bp, 0, .13, .06).renderOrder = 11;
+  for (const y of [-.05, .31]) mk(cyl(.045, .045, .03, 20), M.brass, bp, 0, y, .06);
+  C.water = mk(cyl(.03, .03, 1, 16), std({ color: 0x3aa8d8, emissive: 0x0a3a55, roughness: .1 }), bp, 0, .13, .06);
+  for (let k = 0; k <= 4; k++) mk(rbox(k === 2 ? .05 : .03, .006, .004, .002), M.black, bp, -.06, -.03 + k * .32 / 4, .03);
+  plate(bp, 'BALLASTS', 0, .25, .005, .24, .045);
+  // tableau du plafond, au-dessus du dôme
+  const ov = grp(root, 0, 1.28, -5.05, .75);
+  mk(rbox(1.1, .32, .05, .02), M.creamPaint, ov); mk(rbox(1.14, .36, .03, .02), M.brass, ov, 0, 0, -.025);
+  for (let i = 0; i < 6; i++) toggle(ov, -.4 + i * .16, -.05, .025, i % 3 !== 1);
+  indicator(ov, -.45, .1, .025, 0x6dff7a); indicator(ov, .45, .1, .025, 0xffb43a);
+  plate(ov, 'PORT-COCHON', 0, .1, .028, .36, .06);
+  // micro de la radio sur son crochet, avec son fil en spirale
+  const hook = grp(root, -1.2, .55, -4.7, 0, Math.PI / 2 - .3, 0);
+  mk(rbox(.1, .14, .05, .015), M.black, hook, 0, -.12, .03); mk(cyl(.008, .008, .06, 6), M.steel, hook, 0, 0, .02, Math.PI / 2);
+  const coil = new THREE.Curve(); coil.getPoint = (t, v = new THREE.Vector3()) => v.set(.025 * Math.cos(t * 50), -t * .6, .025 * Math.sin(t * 50) + .04);
+  mk(new THREE.TubeGeometry(coil, 240, .005, 5), M.black, hook, 0, -.19, 0);
+  // la pinte (niveau à bulle) et le cochon à ressort, sur l'aile gauche de la console
+  const pint = grp(root, -1.1, FLOOR + .59, -5.02);
+  mk(new THREE.LatheGeometry([[0, 0], [.045, 0], [.05, .005], [.055, .17], [.0555, .175]].map(p => V2(p[0], p[1])), 24), M.glass, pint).renderOrder = 9;
+  const liquid = grp(pint, 0, .005, 0); mk(cyl(.047, .043, .13, 20), M.beer, liquid, 0, .065, 0); mk(cyl(.05, .048, .025, 20), M.foam, liquid, 0, .14, 0);
+  mk(tor(.04, .008, 6, 14, Math.PI), M.glass, pint, .062, .09, 0, 0, 0, -Math.PI / 2);
   C.liquid = liquid;
-  const pig = new THREE.Group(); pig.position.set(.55, FLOOR + .62, -5.05); pig.rotation.y = -.5; root.add(pig);
-  add(cyl(.07, .075, .015, 16), M.brass, 0, .007, 0, 0, 0, 0, pig);
-  add(new THREE.SphereGeometry(.06, 16, 12), M.pink, 0, .07, 0, 0, 0, 0, pig).scale.set(1, .85, 1.35);
-  for (const [x, z] of [[-.03, -.045], [.03, -.045], [-.03, .045], [.03, .045]]) add(cyl(.012, .012, .04, 6), M.pink, x, .025, z, 0, 0, 0, pig);
-  const head = new THREE.Group(); head.position.set(0, .1, -.06); pig.add(head);
-  add(new THREE.SphereGeometry(.045, 14, 10), M.pink, 0, .02, -.02, 0, 0, 0, head);
-  add(cyl(.02, .022, .02, 12), M.pink, 0, .015, -.065, Math.PI / 2, 0, 0, head);
-  for (const x of [-.022, .022]) {
-    add(new THREE.ConeGeometry(.015, .03, 6), M.pink, x, .06, -.01, -.3, 0, x * 10, head);
-    add(new THREE.SphereGeometry(.006, 6, 4), new THREE.MeshBasicMaterial({ color: 0x1a0d0d }), x * .7, .035, -.058, 0, 0, 0, head);
-  }
+  const pig = grp(root, -1.06, FLOOR + .59, -5.32, 0, .4, 0);
+  mk(cyl(.07, .075, .015, 20), M.brass, pig, 0, .007, 0);
+  mk(sph(.06, 18, 14), M.pink, pig, 0, .07, 0).scale.set(1, .85, 1.35);
+  for (const [x, z] of [[-.03, -.045], [.03, -.045], [-.03, .045], [.03, .045]]) mk(cyl(.012, .012, .04, 8), M.pink, pig, x, .025, z);
+  const head = grp(pig, 0, .1, -.06);
+  mk(sph(.045, 16, 12), M.pink, head, 0, .02, -.02); mk(cyl(.02, .022, .02, 14), M.pink, head, 0, .015, -.065, Math.PI / 2);
+  for (const x of [-.022, .022]) { mk(new THREE.ConeGeometry(.015, .03, 8), M.pink, head, x, .06, -.01, -.3, 0, x * 10); mk(sph(.006, 6, 4), new THREE.MeshBasicMaterial({ color: 0x1a0d0d }), head, x * .7, .035, -.058); }
   C.pigHead = head;
-  // voyant rouge au-dessus du dôme
-  C.alarm = add(new THREE.SphereGeometry(.045, 12, 8), M.redLamp, 0, 1.52, -5.35);
+  const instFill = new THREE.PointLight(0xffd8a0, .5, 2.2, 2); instFill.position.set(0, FLOOR + 1.45, -4.3); root.add(instFill);
 
-  // ------------------------------------------------ salle des machines
-  const eng = new THREE.Group(); eng.position.set(.72, FLOOR, -.3); root.add(eng);
-  const engPaint = new THREE.MeshStandardMaterial({ color: 0x2f4a3c, roughness: .55, metalness: .3 });
-  add(box(.75, .7, 2.8), engPaint, 0, .35, 0, 0, 0, 0, eng);
-  for (let k = 0; k < 6; k++) add(box(.78, .05, .05), M.brass, 0, .2 + (k % 2) * .3, -1.2 + k * .48, 0, 0, 0, eng);
-  for (const z of [-1.3, 1.3]) add(cyl(.06, .06, .9, 10), M.copper, -.25, .9, z, 0, 0, 0, eng);
-  add(box(.8, .08, 2.9), M.brass, 0, .72, 0, 0, 0, 0, eng);
+  // ---------------------------------------------------------------- salle des machines
+  const eng = grp(root, .74, FLOOR, -.3);
+  mk(rbox(.72, .62, 2.9, .06), M.green, eng, 0, .31, 0);
+  for (let k = 0; k < 7; k++) mk(rbox(.76, .05, .06, .02), M.brassDark, eng, 0, .45, -1.35 + k * .45);
+  mk(rbox(.6, .14, 2.7, .05), M.green, eng, 0, .69, 0);
   const pistons = [];
   for (let k = 0; k < 4; k++) {
-    add(cyl(.13, .13, .45, 14), M.steel, 0, .98, -1 + k * .66, 0, 0, 0, eng);
-    pistons.push(add(cyl(.09, .09, .3, 12), M.copper, 0, 1.25, -1 + k * .66, 0, 0, 0, eng));
+    const z = -1.05 + k * .7;
+    mk(cyl(.13, .15, .32, 24), M.green, eng, 0, .92, z); mk(tor(.13, .02, 8, 24), M.brass, eng, 0, 1.08, z, Math.PI / 2);
+    for (let b = 0; b < 6; b++) { const a = b / 6 * TAU; mk(cyl(.012, .012, .02, 6), M.steel, eng, Math.cos(a) * .13, 1.09, z + Math.sin(a) * .13); }
+    pistons.push(mk(cyl(.095, .095, .22, 20), M.steel, eng, 0, 1.12, z));
+    mk(rbox(.16, .1, .3, .04), M.red, eng, -.2, .92, z);
   }
-  const fly = add(cyl(.42, .42, .1, 28), M.iron, -.43, .6, 1.05, 0, 0, Math.PI / 2, eng);
-  add(box(.1, .6, .06), M.brass, 0, 0, 0, 0, 0, 0, fly).position.set(0, .06, 0);
+  { const ex = new THREE.CatmullRomCurve3([new THREE.Vector3(.18, .9, -1.05), new THREE.Vector3(.3, .95, -1.05), new THREE.Vector3(.3, 1.0, .4), new THREE.Vector3(.25, 1.2, 1.4), new THREE.Vector3(.2, 2.6, 1.5)]);
+    mk(new THREE.TubeGeometry(ex, 64, .055, 14), M.copper, eng); for (let k = 0; k < 4; k++) mk(cyl(.035, .035, .14, 12), M.copper, eng, .24, .95, -1.05 + k * .7, 0, 0, Math.PI / 2); }
+  const fly = grp(eng, -.42, .55, 1.12, 0, 0, Math.PI / 2);
+  mk(tor(.36, .05, 12, 48), M.iron, fly, 0, 0, 0, Math.PI / 2); mk(cyl(.07, .07, .12, 20), M.brass, fly);
+  for (let k = 0; k < 6; k++) mk(rbox(.04, .7, .03, .01), M.iron, fly, 0, 0, 0, k * Math.PI / 6, 0, 0);
+  mk(rbox(.14, .06, .02, .01), M.brass, fly, 0, .3, .06);
+  plate(eng, 'MOTEUR PORKO · 4 CYL.', -.37, .3, .4, .4, .07, 0, -Math.PI / 2);
   C.pistons = pistons; C.fly = fly;
-  for (let k = 0; k < 4; k++) {                                      // batteries
-    const b = add(box(.36, .5, .7), new THREE.MeshStandardMaterial({ color: k % 2 ? 0x2d4a3a : 0x30503e, roughness: .6 }), -.92, FLOOR + .25, -2.1 + k * .82);
-    add(box(.2, .06, .08), M.brass, 0, .28, -.2, 0, 0, 0, b); add(box(.2, .06, .08), M.copper, 0, .28, .2, 0, 0, 0, b);
+  // batteries
+  const rack = grp(root, -.95, FLOOR, -.65);
+  for (const z of [-1.8, 1.7]) for (const x of [-.22, .22]) mk(rbox(.04, .62, .04, .01), M.iron, rack, x, .31, z);
+  mk(rbox(.5, .04, 3.6, .01), M.iron, rack, 0, .6, -.05);
+  for (let k = 0; k < 5; k++) { const b = grp(rack, 0, 0, -1.5 + k * .72); mk(rbox(.4, .52, .6, .03), M.green, b, 0, .27, 0);
+    for (const dz of [-.18, .18]) { mk(cyl(.025, .025, .05, 12), dz < 0 ? M.copper : M.steel, b, .05, .56, dz); mk(cyl(.03, .03, .02, 12), M.black, b, -.1, .54, dz); }
+    if (k < 4) mk(rbox(.04, .02, .5, .005), M.copper, b, .05, .59, .36); }
+  // râtelier à torpilles, deux torpilles sanglées
+  const torp = grp(root, -1.18, .78, -.35);
+  for (const y of [0, .34]) {
+    const tg = grp(torp, 0, y, 0);
+    const body = new THREE.CapsuleGeometry(.14, 1.9, 8, 24); body.rotateX(Math.PI / 2); mk(body, M.red, tg);
+    const nose = new THREE.SphereGeometry(.142, 24, 12, 0, TAU, 0, Math.PI / 2); nose.rotateX(-Math.PI / 2); mk(nose, M.brass, tg, 0, 0, -1.0);
+    for (const z of [-.6, .1, .8]) mk(tor(.143, .012, 8, 32), M.brassDark, tg, 0, 0, z);
+    for (let f = 0; f < 4; f++) mk(rbox(.015, .2, .18, .005), M.brass, tg, 0, 0, 1.0, 0, 0, f * Math.PI / 2);
+    const prop = grp(tg, 0, 0, 1.12); for (let b = 0; b < 4; b++) mk(rbox(.012, .14, .04, .005), M.brass, prop, Math.sin(b * Math.PI / 2) * .06, Math.cos(b * Math.PI / 2) * .06, 0, .4, 0, -b * Math.PI / 2);
   }
-  const torp = new THREE.Group(); torp.position.set(-.95, .55, -.3); root.add(torp);  // deux torpilles sur leur râtelier
-  for (const y of [0, .32]) {
-    const t = new THREE.CapsuleGeometry(.13, 1.8, 6, 16); t.rotateX(Math.PI / 2);
-    add(t, M.paint, 0, y, 0, 0, 0, 0, torp);
-    add(new THREE.SphereGeometry(.132, 16, 10, 0, TAU, 0, Math.PI / 2), M.brass, 0, y, -1.02, -Math.PI / 2, 0, 0, torp);
-    for (let f = 0; f < 4; f++) add(box(.02, .14, .2), M.brass, 0, y, 1.0, 0, 0, f * Math.PI / 2, torp);
-  }
-  for (const z of [-1, .5]) add(box(.4, .04, .08), M.iron, 0, -.15, z, 0, 0, 0, torp);
-  // panneau de manomètres sur la cloison
-  add(box(.5, .4, .04), M.iron, -.55, .45, -2.72);
-  for (const [x, y] of [[-.66, .5], [-.44, .5], [-.55, .36]]) { add(cyl(.06, .06, .03, 20), M.brass, x, y, -2.69, Math.PI / 2, 0, 0); add(new THREE.CircleGeometry(.05, 20), M.cream, x, y, -2.674); }
+  for (const z of [-.6, .55]) { mk(tor(.16, .012, 6, 20, Math.PI), M.iron, torp, 0, 0, z, 0, 0, Math.PI); mk(tor(.16, .012, 6, 20, Math.PI), M.iron, torp, 0, .34, z, 0, 0, Math.PI); mk(rbox(.36, .03, .06, .01), M.iron, torp, 0, -.17, z); }
+  // armoire électrique sur la cloison
+  const cab = grp(root, -.82, .2, -2.66);
+  mk(rbox(.5, .7, .14, .02), M.creamPaint, cab); mk(rbox(.04, .14, .03, .01), M.black, cab, .16, 0, .08);
+  gauge(cab, -.1, .17, .07, .07, { label: 'Volts', labels: ['0', '24', '48'], red: [.85, 1] }, 'volts');
+  gauge(cab, .1, .17, .07, .07, { label: 'Ampères', labels: ['0', '50', '100'], red: [.8, 1] }, 'amps');
+  for (let i = 0; i < 4; i++) toggle(cab, -.15 + i * .1, -.15, .07, true);
 
-  // ------------------------------------------------ soute
-  const rng = mulberry(42);
-  for (const [x, y, z, s] of [[.75, .3, 3.2, .6], [.75, .3, 3.9, .6], [.78, .9, 3.5, .55], [.72, .3, 4.75, .65], [.75, .3, 5.5, .55]]) {
-    const c = add(box(s, s, s), M.wood, x, FLOOR + y, z, 0, (rng() - .5) * .3, 0);
-    for (const yy of [-s / 2 + .05, s / 2 - .05]) add(box(s + .01, .04, s + .01), M.iron, 0, yy, 0, 0, 0, 0, c);
+  // ---------------------------------------------------------------- soute
+  const crateG = rbox(1, 1, 1, .02);
+  for (const [x, y, z, s, ry] of [[.78, .3, 3.1, .6, .05], [.78, .3, 3.8, .6, -.08], [.8, .88, 3.45, .55, .2], [.74, .32, 4.65, .64, .03], [.78, .28, 5.42, .56, -.12]]) {
+    const c = mk(crateG, M.wood, root, x, FLOOR + y, z, 0, ry, 0); c.scale.setScalar(s);
+    for (const yy of [-.42, .42]) mk(rbox(1.02, .06, 1.02, .01), M.iron, c, 0, yy, 0);
   }
-  const kegG = new THREE.LatheGeometry([[0, 0], [.2, 0], [.23, .05], [.25, .3], [.23, .55], [.2, .6], [0, .6]].map(p => new THREE.Vector2(p[0], p[1])), 18);
-  for (const [x, z] of [[-.85, 3.1], [-.85, 3.75], [-.85, 4.4]]) {
-    const k = add(kegG, M.steel, x, FLOOR + .25, z, 0, 0, Math.PI / 2);
-    add(cyl(.252, .252, .1, 18, true), M.paint, 0, .3, 0, 0, 0, 0, k);
-  }
-  // échelle vers le sas
-  for (const x of [-.22, .22]) add(cyl(.025, .025, 2.6, 8), M.brass, x, .25, 6.05);
-  for (let y = -.8; y < 1.5; y += .3) add(cyl(.018, .018, .44, 6), M.brass, 0, y, 6.05, 0, 0, Math.PI / 2);
-  add(new THREE.TorusGeometry(.42, .06, 8, 28), M.brass, 0, 1.7, 6.05, Math.PI / 2, 0, 0);
+  { const net = grp(root, 1.36, .2, 4.2, 0, -Math.PI / 2, 0), ln = [];
+    for (let i = -6; i <= 6; i++) ln.push(i * .12, -.6, 0, i * .12 + .05, .7, 0);
+    for (let j = -5; j <= 5; j++) ln.push(-.75, j * .12, 0, .75, j * .12 + .03, 0);
+    const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.Float32BufferAttribute(ln, 3)); net.add(new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: 0x8a6a40 }))); }
+  const kegG = new THREE.LatheGeometry([[0, 0], [.2, 0], [.23, .04], [.25, .3], [.23, .56], [.2, .6], [0, .6]].map(p => V2(p[0], p[1])), 24);
+  mk(rbox(.5, .06, 2.0, .01), M.iron, root, -.9, FLOOR + .03, 3.85);
+  for (const z of [3.1, 3.8, 4.5]) { const k = mk(kegG, M.steel, root, -.6, FLOOR + .3, z, 0, 0, Math.PI / 2); mk(cyl(.252, .252, .12, 24, true), M.red, k, 0, .3, 0); mk(tor(.24, .012, 6, 24), M.brassDark, k, 0, .08, 0, Math.PI / 2); mk(tor(.24, .012, 6, 24), M.brassDark, k, 0, .52, 0, Math.PI / 2); }
+  for (let i = 0; i < 2; i++) { const lk = grp(root, -1.0, FLOOR, 5.15 + i * .38); mk(rbox(.36, 1.6, .36, .02), M.creamPaint, lk, 0, .8, 0); for (let s = 0; s < 4; s++) mk(rbox(.2, .015, .01, .003), M.black, lk, .181, 1.35 + s * .03, 0, 0, Math.PI / 2); mk(rbox(.02, .1, .03, .005), M.steel, lk, .19, .9, .1); }
+  for (const x of [-.22, .22]) mk(cyl(.025, .025, 2.7, 12), M.brass, root, x, .3, 6.05);
+  for (let y = -.8; y < 1.5; y += .28) mk(cyl(.02, .02, .44, 10), M.brass, root, 0, y, 6.05, 0, 0, Math.PI / 2);
+  { const h = grp(root, 0, 1.7, 6.05, Math.PI / 2); mk(tor(.45, .07, 12, 40), M.brass, h); mk(cyl(.4, .4, .06, 40), M.red, h, 0, 0, -.02, Math.PI / 2); const w = grp(h, 0, 0, .03); mk(tor(.16, .015, 8, 28), M.brass, w); for (let k = 0; k < 3; k++) mk(cyl(.008, .008, .3, 6), M.brass, w, 0, 0, 0, 0, 0, k * Math.PI / 3); }
+  plate(root, 'SOUTE', 0, .9, BULK[1] + .07, .3, .06);
+  plate(root, 'MACHINES', 0, .9, BULK[0] + .07, .36, .06);
 
-  // ------------------------------------------------ collisions (boîtes x/z, en local)
+  // ---------------------------------------------------------------- collisions à pied (boîtes x/z en local)
   const boxes = [
-    [-1.2, 1.2, -9, -4.82],            // console
-    [-.42, .42, -4.55, -3.78],          // fauteuil
-    [.38, .62, -4.62, -4.08],          // manette des gaz
-    [-.62, -.38, -4.62, -4.38],         // volant
-    [.3, 1.2, -1.75, 1.2],             // moteur
-    [-1.2, -.72, -2.5, 1.2],           // batteries
-    [.4, 1.2, 2.85, 5.9],              // caisses
-    [-1.2, -.58, 2.85, 4.75],          // fûts
-    [-1.2, 1.2, 5.85, 9],              // échelle et poupe
+    [-1.3, 1.3, -9, -4.93],        // console
+    [-.4, .4, -4.7, -3.62],         // fauteuil et manche
+    [.64, .92, -4.78, -4.46],       // télégraphe
+    [-1.3, -.82, -4.85, -4.15],     // tableau des ballasts
+    [.32, 1.3, -1.8, 1.35],         // moteur
+    [-1.3, -.66, -2.5, 1.2],        // batteries
+    [.42, 1.3, 2.75, 5.8],          // caisses
+    [-1.3, -.58, 2.8, 4.9],         // fûts
+    [-1.3, -.78, 4.95, 5.9],        // casiers
+    [-1.3, 1.3, 5.85, 9],           // échelle et poupe
   ];
   function collide(p, r = .22) {
-    p.x = clamp(p.x, -1.08 + r, 1.08 - r);
-    for (const z of BULK) if (Math.abs(p.z - z) < .06 + r && Math.abs(p.x) > DOOR - r * .5) p.z = p.z < z ? z - .06 - r : z + .06 + r;
+    p.x = clamp(p.x, -1.12 + r, 1.12 - r);
+    for (const z of BULK) if (Math.abs(p.z - z) < .08 + r && Math.abs(p.x) > DOOR - r * .5) p.z = p.z < z ? z - .08 - r : z + .08 + r;
     for (const [x0, x1, z0, z1] of boxes) {
       if (p.x > x0 - r && p.x < x1 + r && p.z > z0 - r && p.z < z1 + r) {
-        const dx0 = p.x - (x0 - r), dx1 = x1 + r - p.x, dz0 = p.z - (z0 - r), dz1 = z1 + r - p.z, m = Math.min(dx0, dx1, dz0, dz1);
-        if (m === dx0) p.x = x0 - r; else if (m === dx1) p.x = x1 + r; else if (m === dz0) p.z = z0 - r; else p.z = z1 + r;
+        const a = p.x - (x0 - r), b = x1 + r - p.x, c = p.z - (z0 - r), d = z1 + r - p.z, m = Math.min(a, b, c, d);
+        if (m === a) p.x = x0 - r; else if (m === b) p.x = x1 + r; else if (m === c) p.z = z0 - r; else p.z = z1 + r;
       }
     }
     return p;
   }
-
   return {
-    root, M, C, lights, dashCanvas, dashTex, sonCanvas, sonTex, collide,
-    seatPos: new THREE.Vector3(0, FLOOR, -4.15), seatEye: new THREE.Vector3(0, FLOOR + 1.12, -4.2),
-    spawn: new THREE.Vector3(0, FLOOR, .4),
+    root, M, C, lights, collide, sonCanvas: sonC, sonTex: sonT, ctrCanvas: ctrC, ctrTex: ctrT, instFill, sonGlow,
+    seatPos: new THREE.Vector3(0, FLOOR, -3.95), seatEye: new THREE.Vector3(0, FLOOR + 1.12, -4.0), seatSpot: new THREE.Vector3(0, FLOOR, -3.4),
+    spawn: new THREE.Vector3(0, FLOOR, .5), pig: { a: 0, v: 0 }, lastCtr: '',
   };
 }
 
-// ---------------------------------------------------------------- cadrans du tableau de bord
-function dial(g, cx, cy, r, v, label, red, ticks = 5) {
-  g.save(); g.translate(cx, cy);
-  let gr = g.createRadialGradient(-r * .3, -r * .3, r * .1, 0, 0, r * 1.12);
-  gr.addColorStop(0, '#fbe7b0'); gr.addColorStop(.5, '#c9963f'); gr.addColorStop(1, '#5a3b17');
-  g.fillStyle = gr; g.beginPath(); g.arc(0, 0, r * 1.12, 0, TAU); g.fill();
-  gr = g.createRadialGradient(0, -r * .2, 0, 0, 0, r); gr.addColorStop(0, '#fbf3df'); gr.addColorStop(1, '#e0cc9e');
-  g.fillStyle = gr; g.beginPath(); g.arc(0, 0, r, 0, TAU); g.fill();
-  const A0 = -Math.PI * .75, A1 = Math.PI * .75, ang = t => A0 + t * (A1 - A0) - Math.PI / 2;
-  if (red) { g.strokeStyle = '#c8242f'; g.lineWidth = r * .12; g.beginPath(); g.arc(0, 0, r * .8, ang(red[0]), ang(red[1])); g.stroke(); }
-  g.strokeStyle = '#5b1020';
-  for (let i = 0; i <= ticks * 2; i++) { const a = ang(i / (ticks * 2)), mj = i % 2 === 0; g.lineWidth = mj ? r * .05 : r * .025; g.beginPath(); g.moveTo(Math.cos(a) * r * (mj ? .66 : .74), Math.sin(a) * r * (mj ? .66 : .74)); g.lineTo(Math.cos(a) * r * .88, Math.sin(a) * r * .88); g.stroke(); }
-  g.fillStyle = '#5b1020'; g.font = `700 ${r * .26}px "Barlow Condensed",sans-serif`; g.textAlign = 'center'; g.fillText(label, 0, r * .52);
-  const a = ang(clamp(v, 0, 1.02)); g.strokeStyle = '#1f1611'; g.lineWidth = r * .07; g.lineCap = 'round';
-  g.beginPath(); g.moveTo(-Math.cos(a) * r * .12, -Math.sin(a) * r * .12); g.lineTo(Math.cos(a) * r * .8, Math.sin(a) * r * .8); g.stroke();
-  g.fillStyle = '#c9963f'; g.beginPath(); g.arc(0, 0, r * .1, 0, TAU); g.fill();
-  g.restore();
-}
-export function drawDash(sub, s) {
-  const g = sub.dashCanvas.getContext('2d'), W = 1024, H = 300;
-  g.fillStyle = '#3d0c16'; g.fillRect(0, 0, W, H);
-  g.fillStyle = 'rgba(0,0,0,.25)'; for (let x = 0; x < W; x += 6) g.fillRect(x, 0, 1, H);
-  const d = s.depth;
-  dial(g, 150, 150, 112, d / s.rated / 1.5, 'Profondeur', [1 / 1.5, 1], 6);
-  g.fillStyle = '#120a06'; g.fillRect(95, 235, 110, 40); g.fillStyle = '#f3e8d0'; g.font = '700 34px "Barlow Condensed",sans-serif'; g.textAlign = 'center'; g.fillText(Math.round(d) + ' m', 150, 267);
-  dial(g, 405, 160, 95, s.hull / 100, 'Coque', [0, .3]);
-  dial(g, 640, 160, 95, s.batt / 100, 'Batterie', [0, .2]);
-  dial(g, 875, 160, 95, s.o2 / 100, 'Oxygène', [0, .2]);
-  sub.dashTex.needsUpdate = true;
-}
-export function drawSonar(sub, contacts, sweep, range, knots = 0, heading = 0) {
-  const g = sub.sonCanvas.getContext('2d'), W = 256, r = 128;
-  g.fillStyle = '#03170e'; g.fillRect(0, 0, W, W);
-  g.strokeStyle = 'rgba(141,255,182,.25)'; g.lineWidth = 2;
-  for (let k = 1; k <= 3; k++) { g.beginPath(); g.arc(r, r, r * k / 3.2, 0, TAU); g.stroke(); }
-  g.strokeStyle = 'rgba(190,255,215,.9)'; g.beginPath(); g.moveTo(r, r); g.lineTo(r + Math.sin(sweep) * r, r - Math.cos(sweep) * r); g.stroke();
-  for (const c of contacts) {
-    const age = ((sweep - c[0]) % TAU + TAU) % TAU / TAU, al = (1 - age) * c[2];
-    g.fillStyle = `rgba(141,255,182,${al})`; g.fillRect(r + Math.sin(c[0]) * c[1] * r * .94 - 3, r - Math.cos(c[0]) * c[1] * r * .94 - 3, 6, 6);
+// ---------------------------------------------------------------- animation de l'intérieur
+const needleA = v => (Math.PI * .75) - clamp(v, 0, 1.03) * Math.PI * 1.5;
+export function animateSub(sub, s, dt, t) {
+  const C = sub.C;
+  C.stick.rotation.z = damp(C.stick.rotation.z, -s.stickX * .32, 12, dt); C.stick.rotation.x = damp(C.stick.rotation.x, s.stickY * .32, 12, dt);
+  C.thr.rotation.z = damp(C.thr.rotation.z, s.thr > 0 ? s.thr * .9 : s.thr * 2.2, 9, dt);
+  C.wheelFill.rotation.z += (s.fill ? 5 : 0) * dt; C.wheelVent.rotation.z -= (s.vent ? 5 : 0) * dt;
+  C.water.scale.y = Math.max(.01, s.bal * .34); C.water.position.y = -.04 + s.bal * .17;
+  C.liquid.rotation.set(-s.pitch, 0, -s.roll);
+  const rpm = s.batt > 0 ? Math.abs(s.thr) : 0;
+  C.pistons.forEach((p, i) => (p.position.y = 1.12 + Math.sin(t * (5 + rpm * 20) + i * 1.57) * .07 * (rpm > .01 ? 1 : 0)));
+  C.fly.rotation.x += dt * rpm * 16;
+  const pg = sub.pig; pg.v += (-(pg.a - (-s.yawRate * 40 + s.pitch * 25)) * 120 - pg.v * 5) * dt + s.kick; pg.a = clamp(pg.a + pg.v * dt, -40, 40); C.pigHead.rotation.z = pg.a * Math.PI / 180;
+  // aiguilles, avec un léger tremblement
+  const jit = Math.sin(t * 23) * .004 + Math.sin(t * 7) * .003;
+  const set = (k, v) => { const n = C.needles[k]; if (n) n.rotation.z = damp(n.rotation.z, needleA(v) + jit, 6, dt); };
+  set('depth', s.depth / 240); set('hull', s.hull / 100); set('batt', s.batt / 100); set('o2', s.o2 / 100);
+  set('volts', s.batt > 0 ? .5 + s.batt / 400 : 0); set('amps', .15 + rpm * .6 + (s.lights ? .1 : 0));
+  // compteur à rouleaux
+  const ctr = String(Math.round(s.depth)).padStart(4, '0');
+  if (ctr !== sub.lastCtr) {
+    sub.lastCtr = ctr; const g = sub.ctrCanvas.getContext('2d');
+    g.fillStyle = '#120b08'; g.fillRect(0, 0, 256, 72); g.textAlign = 'center'; g.textBaseline = 'middle';
+    for (let i = 0; i < 4; i++) { const gr = g.createLinearGradient(0, 0, 0, 72); gr.addColorStop(0, '#2a1d16'); gr.addColorStop(.5, '#f3e8d0'); gr.addColorStop(1, '#2a1d16'); g.fillStyle = gr; g.fillRect(8 + i * 50, 6, 44, 60); g.fillStyle = '#1a1210'; g.font = '700 50px "Barlow Condensed",sans-serif'; g.fillText(ctr[i], 30 + i * 50, 38); }
+    g.fillStyle = '#f3e8d0'; g.font = '700 30px "Barlow Condensed",sans-serif'; g.fillText('m', 232, 40);
+    sub.ctrTex.needsUpdate = true;
   }
-  g.fillStyle = '#ffe27a'; g.beginPath(); g.moveTo(r, r - 10); g.lineTo(r - 7, r + 7); g.lineTo(r + 7, r + 7); g.fill();
-  g.fillStyle = 'rgba(141,255,182,.8)'; g.font = '700 22px "Barlow Condensed",sans-serif'; g.textAlign = 'center'; g.fillText(range + ' m', r, W - 18);
-  g.textAlign = 'left'; g.fillText(knots.toFixed(1).replace('.', ',') + ' nd', 14, 28); g.textAlign = 'right'; g.fillText(String(Math.round(heading)).padStart(3, '0') + '°', W - 14, 28);
+  // voyants
+  const lampSet = (k, on) => { const l = C.lamps[k]; if (l) l.material.color.copy(on ? l.userData.on : l.userData.off); };
+  const crit = s.hull < 30 || s.o2 < 20 || s.batt < 15 || s.depth > s.rated;
+  lampSet('power', s.batt > 0); lampSet('lights', s.lights); lampSet('alarm', crit && Math.sin(t * 9) > 0); lampSet('surface', s.depth < 1);
+  if (C.lightsToggle) C.lightsToggle.rotation.x = damp(C.lightsToggle.rotation.x, s.lights ? .5 : -.5, 18, dt);
+  // lampes : légère respiration, secours en rouge si la batterie est vide
+  const base = [3, 6, 5], cols = [0xffcf96, 0xffc27a, 0xffbb70];
+  sub.lights.forEach((l, i) => { l.intensity = (s.batt > 0 ? base[i] : .8) * (1 + .03 * Math.sin(t * 13 + i * 2) * Math.sin(t * 3.1 + i)); l.color.setHex(s.batt > 0 ? cols[i] : 0xff3020); });
+  sub.instFill.intensity = s.batt > 0 ? .5 : 0; sub.sonGlow.intensity = s.batt > 0 ? .6 : 0;
+}
+
+// ---------------------------------------------------------------- écran du sonar
+export function drawSonar(sub, contacts, sweep, range, knots = 0, heading = 0, on = true) {
+  const g = sub.sonCanvas.getContext('2d'), W = 256, r = 128;
+  g.fillStyle = on ? '#03170e' : '#050807'; g.fillRect(0, 0, W, W);
+  if (on) {
+    g.strokeStyle = 'rgba(141,255,182,.22)'; g.lineWidth = 2;
+    for (let k = 1; k <= 3; k++) { g.beginPath(); g.arc(r, r, r * k / 3.2, 0, TAU); g.stroke(); }
+    g.beginPath(); g.moveTo(r, 10); g.lineTo(r, W - 10); g.moveTo(10, r); g.lineTo(W - 10, r); g.stroke();
+    const gr = g.createConicGradient ? g.createConicGradient(sweep - Math.PI / 2 - .9, r, r) : null;
+    if (gr) { gr.addColorStop(0, 'rgba(141,255,182,0)'); gr.addColorStop(.143, 'rgba(141,255,182,.3)'); gr.addColorStop(.144, 'rgba(141,255,182,0)'); g.fillStyle = gr; g.beginPath(); g.arc(r, r, r, 0, TAU); g.fill(); }
+    for (const c of contacts) { const age = ((sweep - c[0]) % TAU + TAU) % TAU / TAU, al = (1 - age) * c[2]; g.fillStyle = `rgba(141,255,182,${al})`; g.fillRect(r + Math.sin(c[0]) * c[1] * r * .94 - 3, r - Math.cos(c[0]) * c[1] * r * .94 - 3, 6, 6); }
+    g.fillStyle = '#ffe27a'; g.beginPath(); g.moveTo(r, r - 10); g.lineTo(r - 7, r + 7); g.lineTo(r + 7, r + 7); g.fill();
+    g.fillStyle = 'rgba(141,255,182,.85)'; g.font = '700 22px "Barlow Condensed",sans-serif'; g.textAlign = 'center'; g.fillText(range + ' m', r, W - 22);
+    g.textAlign = 'left'; g.fillText(knots.toFixed(1).replace('.', ',') + ' nd', 30, 40); g.textAlign = 'right'; g.fillText(String(Math.round(heading)).padStart(3, '0') + '°', W - 30, 40);
+  }
+  const v = g.createRadialGradient(r, r, r * .6, r, r, r); v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,.6)'); g.fillStyle = v; g.fillRect(0, 0, W, W);
   sub.sonTex.needsUpdate = true;
 }

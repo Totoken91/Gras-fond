@@ -8,7 +8,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { clamp, lerp, ss, damp, TAU } from './noise.js';
 import { buildWorld, H, LIMIT, glowUniforms } from './world.js';
-import { buildSub, drawDash, drawSonar, FLOOR, EYE } from './sub.js';
+import { buildSub, animateSub, drawSonar, FLOOR, EYE } from './sub.js';
 import { createInput } from './input.js';
 
 const $ = s => document.querySelector(s);
@@ -29,7 +29,7 @@ const inHemi = new THREE.HemisphereLight(0x6fb8d8, 0x2a1a10, .5); inside.add(inH
 const composer = new EffectComposer(R);
 composer.addPass(new RenderPass(outside, cam));
 const pIn = new RenderPass(inside, cam); pIn.clear = false; pIn.clearDepth = true; composer.addPass(pIn);
-const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), .38, .5, .92); composer.addPass(bloom);
+const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), .3, .45, .96); composer.addPass(bloom);
 composer.addPass(new OutputPass());
 
 const input = createInput(canvas);
@@ -45,7 +45,8 @@ const P = {   // le pilote
   seatT: 0, lookYaw: 0, lookPitch: 0, from: null,
 };
 const subM = new THREE.Matrix4(), _v = new THREE.Vector3(), _f = new THREE.Vector3(), _n = new THREE.Vector3(), _q = new THREE.Quaternion(), _e = new THREE.Euler(0, 0, 0, 'YXZ');
-let started = false, shake = 0, pigA = 0, pigV = 0;
+let started = false, shake = 0, kick = 0;
+const ctl = { x: 0, y: 0, fill: false, vent: false };
 
 function setThr(v) { S.thr = clamp(v, -.4, 1); if (Math.abs(S.thr) < .03) S.thr = 0; input.showThr(S.thr); }
 setThr(0);
@@ -54,7 +55,7 @@ setThr(0);
 const HULL_PTS = [new THREE.Vector3(0, 0, -7.2), new THREE.Vector3(0, 0, 7.8), new THREE.Vector3(0, -1.9, 0), new THREE.Vector3(1.9, 0, 0), new THREE.Vector3(-1.9, 0, 0), new THREE.Vector3(0, 1.9, -3)];
 function stepSub(dt) {
   const seated = P.mode === 'seat' && P.seatT > .95, power = S.batt > 0, k = input.keys;
-  let ix = 0, iy = 0;
+  let ix = 0, iy = 0; ctl.fill = ctl.vent = false;
   if (seated) {
     ix = input.joy.x; iy = input.joy.y;
     if (k.has('KeyA') || k.has('ArrowLeft')) ix = -1; if (k.has('KeyD') || k.has('ArrowRight')) ix = 1;
@@ -64,9 +65,10 @@ function stepSub(dt) {
     if (input.consume('KeyX')) setThr(0);
     const fill = input.fill || k.has('ShiftLeft') || k.has('ShiftRight'), vent = input.vent || k.has('Space');
     if (fill) S.bal = Math.min(1, S.bal + .22 * dt); if (vent) S.bal = Math.max(0, S.bal - .28 * dt);
-    sub.C.wheel.rotation.z += (fill ? 4 : vent ? -4 : 0) * dt;
+    ctl.fill = fill; ctl.vent = vent;
   }
   if (input.consume('KeyL')) S.lights = !S.lights;
+  ctl.x = ix; ctl.y = iy;
   const speed = S.vel.length(), auth = power ? .35 + .65 * clamp(speed / 2.5, 0, 1) : .1;
   S.yawRate = damp(S.yawRate, -ix * .55 * auth, 2.2, dt); S.yaw += S.yawRate * dt;
   S.pitchRate = damp(S.pitchRate, iy * .45 * (power ? 1 : .2), 2.5, dt);
@@ -104,7 +106,7 @@ function stepSub(dt) {
   if (depth > RATED) { S.hull -= (depth - RATED) / 60 * .8 * dt; if (Math.random() < dt * .6) shake = Math.max(shake, .25); }
   if (S.hull <= 0 || S.o2 <= 0) reset();
 }
-function hit(v) { shake = Math.min(1, shake + v * .3); S.hull = Math.max(0, S.hull - Math.max(0, v - 1.2) * 6); pigV += v * 90; }
+function hit(v) { shake = Math.min(1, shake + v * .3); S.hull = Math.max(0, S.hull - Math.max(0, v - 1.2) * 6); kick += v * 90; }
 function reset() {
   S.pos.set(0, -9, 0); S.vel.set(0, 0, 0); S.yaw = S.pitch = S.roll = 0; S.hull = S.batt = S.o2 = 100; S.bal = .5; setThr(0);
   fade = 1;
@@ -127,7 +129,7 @@ function stepPilot(dt) {
     P.vx = damp(P.vx || 0, vx, 10, dt); P.vz = damp(P.vz || 0, vz, 10, dt);
     P.pos.x += P.vx * dt; P.pos.z += P.vz * dt; sub.collide(P.pos);
     P.speed = Math.hypot(P.vx, P.vz); P.bob += P.speed * dt * 5.2;
-    const near = Math.hypot(P.pos.x - sub.seatPos.x, P.pos.z - (sub.seatPos.z + .45)) < 1.05;
+    const near = Math.hypot(P.pos.x - sub.seatSpot.x, P.pos.z - sub.seatSpot.z) < 1.0;
     prompt(near ? (input.mobile ? '' : '<b>E</b> · s’asseoir aux commandes') : '', near ? 'S’asseoir' : '');
     if (near && input.consume('KeyE')) { P.mode = 'seat'; P.seatT = 0; P.from = { pos: P.pos.clone(), yaw: P.yaw, pitch: P.pitch }; P.lookYaw = 0; P.lookPitch = -.2; document.body.classList.add('seated'); }
   } else {
@@ -135,7 +137,7 @@ function stepPilot(dt) {
     P.lookYaw = clamp(P.lookYaw - lx * sens, -1.9, 1.9); P.lookPitch = clamp(P.lookPitch - ly * sens, -1.1, 1.0);
     prompt('', 'Se lever');
     if (input.consume('KeyE') && P.seatT > .9) {
-      P.mode = 'walk'; P.pos.set(-.62, FLOOR, -3.75); P.yaw = Math.PI * .5 + .4; P.pitch = 0; sub.collide(P.pos); document.body.classList.remove('seated');
+      P.mode = 'walk'; P.pos.set(0, FLOOR, -3.2); P.yaw = Math.PI; P.pitch = 0; sub.collide(P.pos); document.body.classList.remove('seated');
     }
   }
   input.pressed.delete('KeyE');
@@ -163,28 +165,14 @@ function prompt(html, act) {
 }
 
 // ---------------------------------------------------------------- animation de l'intérieur
-let dashT = 0, sonT = 0, contacts = [], sonRange = 120;
+let sonT = 0, contacts = [], sonRange = 120;
 function animateInside(dt) {
-  const C = sub.C, seated = P.mode === 'seat';
-  const sx = seated ? (input.keys.has('KeyA') || input.keys.has('ArrowLeft') ? -1 : input.keys.has('KeyD') || input.keys.has('ArrowRight') ? 1 : input.joy.x) : 0;
-  const sy = seated ? (input.keys.has('ArrowUp') ? 1 : input.keys.has('ArrowDown') ? -1 : input.joy.y) : 0;
-  C.stick.rotation.z = damp(C.stick.rotation.z, -sx * .35, 12, dt); C.stick.rotation.x = damp(C.stick.rotation.x, sy * .35, 12, dt);
-  C.thr.rotation.x = damp(C.thr.rotation.x, -S.thr * .8, 10, dt);
-  C.water.scale.y = Math.max(.01, S.bal * .48); C.water.position.y = FLOOR + .7 + S.bal * .24;
-  C.liquid.rotation.set(-S.pitch, 0, -S.roll);
-  const rpm = (S.batt > 0 ? Math.abs(S.thr) : 0);
-  C.pistons.forEach((p, i) => (p.position.y = 1.25 + Math.sin(clock * (4 + rpm * 18) + i * 1.6) * .06 * (rpm > 0 ? 1 : 0)));
-  C.fly.rotation.x += dt * rpm * 14;
-  pigV += (-(pigA - (-S.yawRate * 40 + S.pitch * 20)) * 120 - pigV * 5) * dt; pigA = clamp(pigA + pigV * dt, -40, 40); C.pigHead.rotation.z = pigA * Math.PI / 180;
-  const crit = S.hull < 30 || S.o2 < 20 || S.batt < 15 || -S.pos.y > RATED;
-  C.alarm.material.color.setHex(crit && Math.sin(clock * 9) > 0 ? 0xff2a20 : 0x401010);
-  sub.lights.forEach((l, i) => (l.intensity = (S.batt > 0 ? [4, 7, 6][i] : 1.2) * (1 + .04 * Math.sin(clock * 13 + i * 2) * Math.sin(clock * 3.1 + i))));
   sub.root.position.copy(S.pos); sub.root.quaternion.copy(S.quat);
-  // lumière qui entre par le dôme
-  inHemi.color.copy(outside.fog.color).multiplyScalar(1.3); inHemi.intensity = .25 + .5 * Math.exp(S.pos.y / 40);
-  dashT -= dt; if (dashT <= 0) { dashT = .12; drawDash(sub, { depth: -S.pos.y, rated: RATED, hull: S.hull, batt: S.batt, o2: S.o2, knots: S.vel.length() * 1.944, heading: ((-S.yaw * 180 / Math.PI) % 360 + 360) % 360 }); }
+  inHemi.color.copy(outside.fog.color).multiplyScalar(1.3); inHemi.intensity = .2 + .45 * Math.exp(S.pos.y / 40);
+  animateSub(sub, { stickX: ctl.x, stickY: ctl.y, thr: S.thr, bal: S.bal, fill: ctl.fill, vent: ctl.vent, pitch: S.pitch, roll: S.roll, yawRate: S.yawRate, batt: S.batt, hull: S.hull, o2: S.o2, depth: -S.pos.y, rated: RATED, lights: S.lights, kick }, dt, clock);
+  kick = 0;
   sonT -= dt; if (sonT <= 0) { sonT = .4; sampleSonar(); }
-  drawSonar(sub, contacts, (clock * 2.2) % TAU, sonRange, S.vel.length() * 1.944, ((-S.yaw * 180 / Math.PI) % 360 + 360) % 360);
+  drawSonar(sub, contacts, (clock * 2.2) % TAU, sonRange, S.vel.length() * 1.944, ((-S.yaw * 180 / Math.PI) % 360 + 360) % 360, S.batt > 0);
 }
 function sampleSonar() {
   contacts = []; const fx = -Math.sin(S.yaw), fz = -Math.cos(S.yaw), rx = Math.cos(S.yaw), rz = -Math.sin(S.yaw);
