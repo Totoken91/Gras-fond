@@ -129,3 +129,58 @@ export function plateTex(text, w = 512, h = 96) {
   return tex(c, true);
 }
 export { noise2 };
+
+// Hublots percés dans la coque : carte de transparence sur tout le cylindre (pas de répétition).
+// ports = [[u, v, ru, rv]] en coordonnées de texture.
+export function hullAlpha(ports) {
+  const W = 2048, H = 1024, c = cv(W, H), g = c.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); g.fillStyle = '#000';
+  for (const [u, v, ru, rv] of ports) { g.beginPath(); g.ellipse(u * W, (1 - v) * H, ru * W, rv * H, 0, 0, TAU); g.fill(); }
+  const t = new THREE.CanvasTexture(c); t.wrapS = THREE.RepeatWrapping; return t;
+}
+
+// Caillebotis : barreaux d'acier, trous transparents
+export function gratingMaps() {
+  const S = 256, c = cv(S, S), a = cv(S, S), h = cv(S, S), g = c.getContext('2d'), ga = a.getContext('2d'), gh = h.getContext('2d'), r = mulberry(21);
+  g.fillStyle = '#5e5951'; g.fillRect(0, 0, S, S); ga.fillStyle = '#fff'; ga.fillRect(0, 0, S, S); gh.fillStyle = '#a0a0a0'; gh.fillRect(0, 0, S, S);
+  ga.fillStyle = '#000'; gh.fillStyle = '#202020';
+  for (let y = 0; y < S; y += 32) for (let x = 0; x < S; x += 16) { ga.fillRect(x + 4, y + 4, 9, 25); gh.fillRect(x + 3, y + 3, 11, 27); }
+  speckle(g, S, S, 40, 'rgba(20,14,10,A)', .45, 8, 40, r); speckle(g, S, S, 20, 'rgba(210,200,180,A)', .2, 4, 16, r);
+  return { map: tex(c, true), alphaMap: tex(a), normalMap: tex(normalFrom(h, 3)) };
+}
+
+// Affiches et plaques d'ambiance
+function paper(w, h, draw) {
+  const c = cv(w, h), g = c.getContext('2d'), r = mulberry(w + h);
+  g.fillStyle = '#efe2c2'; g.fillRect(0, 0, w, h); speckle(g, w, h, 60, 'rgba(120,80,40,A)', .12, 10, 60, r);
+  draw(g, w, h);
+  const v = g.createRadialGradient(w / 2, h / 2, Math.min(w, h) * .3, w / 2, h / 2, Math.max(w, h) * .7); v.addColorStop(0, 'rgba(80,50,20,0)'); v.addColorStop(1, 'rgba(80,50,20,.35)'); g.fillStyle = v; g.fillRect(0, 0, w, h);
+  return tex(c, true);
+}
+export function posterAmbree() {
+  return paper(384, 512, (g, w, h) => {
+    g.fillStyle = '#6d1526'; g.fillRect(18, 18, w - 36, h - 36);
+    g.fillStyle = '#f3e8d0'; g.textAlign = 'center'; g.font = '400 46px Bevan,Georgia,serif'; g.fillText('DOUZI', w / 2, 86); g.fillText('AMBRÉE', w / 2, 136);
+    // la chope
+    const x = w / 2 - 60, y = 170;
+    g.fillStyle = '#ffc54e'; g.fillRect(x, y + 40, 120, 190); g.fillStyle = '#c25f0e'; g.fillRect(x, y + 150, 120, 80);
+    g.fillStyle = '#fff4dc'; for (const [dx, dy, rr] of [[10, 40, 26], [45, 30, 30], [85, 38, 28], [115, 44, 20]]) { g.beginPath(); g.arc(x + dx, y + dy, rr, 0, TAU); g.fill(); }
+    g.strokeStyle = '#f3e8d0'; g.lineWidth = 12; g.beginPath(); g.arc(x + 130, y + 130, 40, -Math.PI / 2, Math.PI / 2); g.stroke();
+    g.strokeStyle = '#f3e8d0'; g.lineWidth = 5; g.strokeRect(x, y + 40, 120, 190);
+    g.fillStyle = '#f2c14e'; g.font = '700 30px "Barlow Condensed",sans-serif'; g.fillText('TOUJOURS PLUS', w / 2, h - 60);
+  });
+}
+export function noticeTex() {
+  return paper(512, 320, (g, w, h) => {
+    g.fillStyle = '#6d1526'; g.fillRect(0, 0, w, 60); g.fillStyle = '#f3e8d0'; g.font = '400 30px Bevan,Georgia,serif'; g.textAlign = 'center'; g.fillText('RÈGLEMENT DE BORD', w / 2, 42);
+    g.fillStyle = '#2a1a10'; g.textAlign = 'left'; g.font = '700 26px "Barlow Condensed",sans-serif';
+    ['Art. 8.6 : écouter la personne', 'qui demande de baisser le son.', '', 'Art. 12 : pas de fête en plongée.', 'Art. 13 : même petite.'].forEach((l, i) => g.fillText(l, 34, 110 + i * 38));
+    g.fillStyle = '#8e2438'; g.font = '700 20px "Barlow Condensed",sans-serif'; g.textAlign = 'right'; g.fillText('L’Amirauté de Port-Cochon', w - 30, h - 24);
+  });
+}
+export function stencilTex(text, col = '#f2c14e', bg = '#1a1510') {
+  const c = cv(512, 128), g = c.getContext('2d'); g.fillStyle = bg; g.fillRect(0, 0, 512, 128);
+  for (let i = -4; i < 20; i++) { g.fillStyle = i % 2 ? col : bg; g.beginPath(); g.moveTo(i * 32, 0); g.lineTo(i * 32 + 32, 0); g.lineTo(i * 32 - 32, 128); g.lineTo(i * 32 - 64, 128); g.fill(); }
+  g.fillStyle = bg; g.fillRect(24, 26, 464, 76); g.fillStyle = col; g.font = '700 56px "Barlow Condensed",sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, 256, 66);
+  return tex(c, true);
+}

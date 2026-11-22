@@ -5,6 +5,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { clamp, lerp, ss, damp, TAU } from './noise.js';
 import { buildWorld, H, LIMIT, glowUniforms } from './world.js';
@@ -17,6 +18,7 @@ const R = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'h
 let PR = Math.min(devicePixelRatio || 1, 1.5); const PRMAX = PR;
 R.setPixelRatio(PR);
 R.toneMapping = THREE.ACESFilmicToneMapping; R.toneMappingExposure = 1.15;
+R.shadowMap.enabled = true; R.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const outside = new THREE.Scene(), inside = new THREE.Scene();
 const env = new THREE.PMREMGenerator(R).fromScene(new RoomEnvironment(), .04).texture;
@@ -26,11 +28,14 @@ const sub = buildSub(env);
 inside.add(sub.root);
 const inHemi = new THREE.HemisphereLight(0x6fb8d8, 0x2a1a10, .5); inside.add(inHemi);
 
-const composer = new EffectComposer(R);
+const composer = new EffectComposer(R, new THREE.WebGLRenderTarget(2, 2, { type: THREE.HalfFloatType, samples: matchMedia('(pointer:coarse)').matches ? 2 : 4 }));
 composer.addPass(new RenderPass(outside, cam));
 const pIn = new RenderPass(inside, cam); pIn.clear = false; pIn.clearDepth = true; composer.addPass(pIn);
 const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), .3, .45, .96); composer.addPass(bloom);
 composer.addPass(new OutputPass());
+// vignette légère, comme un vieil objectif
+composer.addPass(new ShaderPass({ uniforms: { tDiffuse: { value: null } }, vertexShader: 'varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
+  fragmentShader: 'uniform sampler2D tDiffuse;varying vec2 vUv;void main(){vec4 c=texture2D(tDiffuse,vUv);vec2 d=vUv-.5;c.rgb*=1.-dot(d,d)*.55;gl_FragColor=c;}' }));
 
 const input = createInput(canvas);
 
@@ -169,7 +174,7 @@ let sonT = 0, contacts = [], sonRange = 120;
 function animateInside(dt) {
   sub.root.position.copy(S.pos); sub.root.quaternion.copy(S.quat);
   inHemi.color.copy(outside.fog.color).multiplyScalar(1.3); inHemi.intensity = .2 + .45 * Math.exp(S.pos.y / 40);
-  animateSub(sub, { stickX: ctl.x, stickY: ctl.y, thr: S.thr, bal: S.bal, fill: ctl.fill, vent: ctl.vent, pitch: S.pitch, roll: S.roll, yawRate: S.yawRate, batt: S.batt, hull: S.hull, o2: S.o2, depth: -S.pos.y, rated: RATED, lights: S.lights, kick }, dt, clock);
+  animateSub(sub, { stickX: ctl.x, stickY: ctl.y, thr: S.thr, bal: S.bal, fill: ctl.fill, vent: ctl.vent, pitch: S.pitch, roll: S.roll, yawRate: S.yawRate, batt: S.batt, hull: S.hull, o2: S.o2, depth: -S.pos.y, rated: RATED, lights: S.lights, kick, playerZ: P.mode === 'seat' ? -4 : P.pos.z }, dt, clock);
   kick = 0;
   sonT -= dt; if (sonT <= 0) { sonT = .4; sampleSonar(); }
   drawSonar(sub, contacts, (clock * 2.2) % TAU, sonRange, S.vel.length() * 1.944, ((-S.yaw * 180 / Math.PI) % 360 + 360) % 360, S.batt > 0);

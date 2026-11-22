@@ -3,7 +3,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { TAU, clamp, damp } from './noise.js';
-import { hullMaps, treadMaps, leatherMaps, woodMaps, brushedMaps, hammerMaps, dialFace, plateTex } from './textures.js';
+import { hullMaps, treadMaps, leatherMaps, woodMaps, brushedMaps, hammerMaps, dialFace, plateTex, hullAlpha, gratingMaps, posterAmbree, noticeTex, stencilTex } from './textures.js';
 
 export const FLOOR = -1.05;
 export const EYE = 1.2;                 // un citoyen Porko fait 1,30 m
@@ -37,9 +37,9 @@ export function buildSub(envMap) {
     copper: std({ color: 0xc0704a, metalness: 1, roughness: .34 }),
     steel: std({ color: 0xa7a8a2, metalness: 1, roughness: .32, roughnessMap: T.brush.roughnessMap }),
     iron: std({ color: 0x3b3834, metalness: .85, roughness: .5 }),
-    green: std({ ...T.green, metalness: .35, roughness: .45 }),
-    red: std({ ...T.red, metalness: .3, roughness: .42 }),
-    creamPaint: std({ ...T.cream, metalness: .2, roughness: .5 }),
+    green: std({ ...T.green, metalness: .35, roughness: .45, normalScale: new THREE.Vector2(.5, .5) }),
+    red: std({ ...T.red, metalness: .3, roughness: .42, normalScale: new THREE.Vector2(.5, .5) }),
+    creamPaint: std({ ...T.cream, metalness: .2, roughness: .5, normalScale: new THREE.Vector2(.25, .25) }),
     leather: std({ ...T.leather, roughness: .42, metalness: 0, envMapIntensity: .3 }),
     rubber: std({ color: 0x1b1918, roughness: .85, metalness: 0 }),
     wood: std({ ...T.wood, roughness: .8, metalness: 0, envMapIntensity: .2 }),
@@ -54,10 +54,23 @@ export function buildSub(envMap) {
   };
   const C = { needles: {}, lamps: {}, toggles: [] };
   const lights = [];
+  const GLOW = (() => { const c = document.createElement('canvas'); c.width = c.height = 64; const g = c.getContext('2d'), gr = g.createRadialGradient(32, 32, 0, 32, 32, 32); gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(.25, 'rgba(255,230,190,.5)'); gr.addColorStop(1, 'rgba(255,200,150,0)'); g.fillStyle = gr; g.fillRect(0, 0, 64, 64); return new THREE.CanvasTexture(c); })();
 
   // ---------------------------------------------------------------- coque, membrures, dôme
   const L = Z_STERN - Z_DOME, midZ = (Z_DOME + Z_STERN) / 2;
-  const hullG = cyl(R, R, L, 64, true); hullG.rotateX(Math.PI / 2); mk(hullG, M.hull, root, 0, 0, midZ);
+  // hublots latéraux : [côté (+1 = tribord), z, hauteur]
+  const PORTS = [[1, -2.25, .5], [-1, -2.25, .5], [1, 3.4, .45], [1, 5.0, .45], [-1, 3.55, .5]], PR = .21;
+  const portAng = (side, y) => { const th = Math.acos(clamp(-y / R, -1, 1)); return side > 0 ? th : TAU - th; };
+  M.hull.alphaMap = hullAlpha(PORTS.map(([sd, z, y]) => [portAng(sd, y) / TAU, (z - Z_DOME) / L, PR / (TAU * R), PR / L])); M.hull.alphaTest = .5;
+  const hullG = cyl(R, R, L, 96, true); hullG.rotateX(Math.PI / 2); mk(hullG, M.hull, root, 0, 0, midZ);
+  for (const [sd, z, y] of PORTS) {
+    const th = portAng(sd, y), x = R * Math.sin(th), g = grp(root, x, y, z); g.lookAt(0, y, z); g.rotateY(Math.PI);
+    mk(cyl(PR + .01, PR + .01, .16, 32, true), M.brassDark, g, 0, 0, .04, Math.PI / 2);
+    mk(tor(PR + .03, .045, 12, 40), M.brass, g, 0, 0, -.04);
+    mk(tor(PR + .005, .02, 8, 40), M.brassDark, g, 0, 0, .1);
+    for (let k = 0; k < 8; k++) { const a = k / 8 * TAU; mk(cyl(.014, .014, .025, 6), M.steel, g, Math.cos(a) * (PR + .07), Math.sin(a) * (PR + .07), -.06, Math.PI / 2); }
+    mk(new THREE.CircleGeometry(PR + .01, 32), M.glass, g, 0, 0, .1).renderOrder = 10;
+  }
   const stern = new THREE.SphereGeometry(R, 48, 16, 0, TAU, 0, Math.PI / 2); stern.rotateX(Math.PI / 2); mk(stern, std({ ...T.red, metalness: .3, roughness: .45, side: THREE.BackSide }), root, 0, 0, Z_STERN);
   const frameProfile = [V2(R + .01, -.045), V2(R - .07, -.045), V2(R - .07, -.012), V2(R - .14, -.012), V2(R - .14, -.032), V2(R - .155, -.032), V2(R - .155, .032), V2(R - .14, .032), V2(R - .14, .012), V2(R - .07, .012), V2(R - .07, .045), V2(R + .01, .045)];
   const frameG = new THREE.LatheGeometry(frameProfile, 64); frameG.rotateX(Math.PI / 2);
@@ -70,7 +83,16 @@ export function buildSub(envMap) {
   const boltG = cyl(.022, .022, .03, 6);
   for (let k = 0; k < 36; k++) { const a = k / 36 * TAU; mk(boltG, M.steel, root, Math.cos(a) * (R - .13), Math.sin(a) * (R - .13), Z_DOME + .09, Math.PI / 2); }
   // plancher : tôle larmée + plinthes
-  const floorG = new THREE.PlaneGeometry(2.6, L + 1.6); floorG.rotateX(-Math.PI / 2); mk(floorG, M.floor, root, 0, FLOOR, midZ + .6);
+  for (const sx of [-1, 1]) { const fg = new THREE.PlaneGeometry(.85, L + 1.6); fg.rotateX(-Math.PI / 2); mk(fg, M.floor, root, sx * .875, FLOOR, midZ + .6); }
+  const GR = gratingMaps(); for (const k of ['map', 'alphaMap', 'normalMap']) GR[k].repeat.set(3, 40);
+  const grat = new THREE.PlaneGeometry(.9, L + 1.6); grat.rotateX(-Math.PI / 2);
+  mk(grat, std({ ...GR, alphaTest: .5, metalness: .8, roughness: .45, side: THREE.DoubleSide }), root, 0, FLOOR, midZ + .6);
+  for (const sx of [-1, 1]) mk(rbox(.05, .05, L + .2, .01), M.iron, root, sx * .45, FLOOR - .025, midZ + .3);
+  // fond de cale sous le caillebotis : tôle mouillée, tuyaux, un peu d'eau qui brille
+  const bilge = new THREE.PlaneGeometry(1.4, L); bilge.rotateX(-Math.PI / 2);
+  mk(bilge, std({ color: 0x1c2224, roughness: .12, metalness: .6, envMapIntensity: .9 }), root, 0, FLOOR - .34, midZ);
+  for (const [x, r, mat] of [[-.25, .06, M.copper], [.2, .045, M.green], [.05, .03, M.steel]]) { const pg = cyl(r, r, L - .4, 14); pg.rotateX(Math.PI / 2); mk(pg, mat, root, x, FLOOR - .3 + r, midZ); }
+  for (const x of [-.55, .55]) { const st = new THREE.PlaneGeometry(.025, L - .6); st.rotateX(-Math.PI / 2); mk(st, new THREE.MeshBasicMaterial({ color: 0x2a9a90 }), root, x * .7, FLOOR - .33, midZ); }
   for (const sx of [-1, 1]) mk(rbox(.06, .14, L + .4, .02), M.brass, root, sx * 1.3, FLOOR + .07, midZ + .3);
   // plafond : chemin de câbles, tuyaux à brides, vannes
   const tray = grp(root, 0, 1.5, midZ - .2);
@@ -90,7 +112,10 @@ export function buildSub(envMap) {
     mk(sph(.065, 16, 12), M.bulb, g, 0, -.14, 0);
     mk(tor(.105, .008, 6, 24), M.iron, g, 0, -.2, 0, Math.PI / 2);
     for (let k = 0; k < 4; k++) { const a = grp(g, 0, -.1, 0, 0, k * Math.PI / 2, 0); mk(tor(.105, .007, 6, 16, Math.PI / 2), M.iron, a, 0, 0, 0, 0, 0, -Math.PI / 2); }
-    const pl = new THREE.PointLight(col, inten, 8, 1.5); pl.position.set(0, -.2, 0); g.add(pl); lights.push(pl); return g;
+    const sp = new THREE.SpotLight(col, inten * 2.2, 9, 1.25, .85, 1.4); sp.position.set(0, -.2, 0); sp.target.position.set(0, -3, 0); g.add(sp, sp.target);
+    sp.castShadow = true; sp.shadow.mapSize.set(512, 512); sp.shadow.bias = -.0015; sp.shadow.normalBias = .02; sp.shadow.camera.near = .1; sp.shadow.camera.far = 6; sp.shadow.autoUpdate = false; sp.shadow.needsUpdate = true;
+    const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: GLOW, color: col, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: .55 })); glow.scale.setScalar(.5); glow.position.y = -.14; g.add(glow);
+    lights.push(sp); return g;
   };
   lamp(-3.55, 0xffcf96, 3); lamp(-.3, 0xffc27a, 6); lamp(4.2, 0xffbb70, 5);
 
@@ -316,6 +341,31 @@ export function buildSub(envMap) {
   plate(root, 'SOUTE', 0, .9, BULK[1] + .07, .3, .06);
   plate(root, 'MACHINES', 0, .9, BULK[0] + .07, .36, .06);
 
+  // ---------------------------------------------------------------- accessoires
+  const paperM = t => std({ map: t, roughness: .85, metalness: 0, envMapIntensity: .1 });
+  // affiche Douzi Ambrée sur la coque, côté bâbord de la salle des machines (au-dessus des batteries)
+  { const g = grp(root, -1.12, .72, 1.55, 0, Math.PI / 2 + .02, .05); mk(new THREE.PlaneGeometry(.42, .56), paperM(posterAmbree()), g); for (const [x, y] of [[-.19, .26], [.19, .26], [-.19, -.26], [.19, -.26]]) mk(sph(.012, 8, 6), M.brass, g, x, y, .01); }
+  // règlement de bord à côté de la porte du poste de pilotage
+  { const g = grp(root, .78, .3, BULK[0] + .07); mk(rbox(.46, .3, .015, .005), M.brassDark, g, 0, 0, -.01); mk(new THREE.PlaneGeometry(.42, .26), paperM(noticeTex()), g, 0, 0, .001); }
+  // bandeaux de danger
+  { const s1 = mk(new THREE.PlaneGeometry(.45, .11), std({ map: stencilTex('DANGER 48 V'), roughness: .6 }), root, -.69, FLOOR + .5, -.65, 0, Math.PI / 2); s1.position.x = -.735;
+    mk(new THREE.PlaneGeometry(.45, .11), std({ map: stencilTex('ATTENTION TÊTE'), roughness: .6 }), root, 0, DOOR_TOP + DOOR + .22, BULK[1] - .075, 0, Math.PI); }
+  // extincteur
+  { const g = grp(root, -.62, FLOOR, BULK[0] + .2); mk(new THREE.CapsuleGeometry(.07, .34, 6, 16), std({ color: 0xc81e1e, roughness: .35, metalness: .3 }), g, 0, .26, 0); mk(cyl(.025, .03, .08, 10), M.black, g, 0, .5, 0); mk(rbox(.08, .02, .03, .005), M.black, g, .03, .53, 0); mk(new THREE.TubeGeometry(new THREE.QuadraticBezierCurve3(new THREE.Vector3(.02, .52, 0), new THREE.Vector3(.12, .5, 0), new THREE.Vector3(.08, .2, .02)), 16, .009, 6), M.black, g); }
+  // bouée couronne dans la soute
+  { const g = grp(root, 1.18, .55, 2.75, 0, -Math.PI / 2 + .05, 0); for (let k = 0; k < 8; k++) mk(tor(.2, .055, 10, 12, TAU / 8), std({ color: k % 2 ? 0xf3e8d0 : 0xc81e2c, roughness: .55 }), g, 0, 0, 0, 0, 0, k * TAU / 8); mk(cyl(.015, .015, .1, 6), M.steel, g, 0, .27, -.03, Math.PI / 2); }
+  // saucissons qui sèchent au plafond de la soute (on ne part pas en mer sans)
+  { const sauG = new THREE.CapsuleGeometry(.035, .26, 6, 12), sM = std({ color: 0x7a2a22, roughness: .7, metalness: 0 }), str = std({ color: 0xe8dcc0, roughness: .9 });
+    for (let i = 0; i < 7; i++) { const g = grp(root, -.25 + (i % 4) * .17, 1.36, 3.2 + i * .28 + (i % 2) * .1, (i % 3 - 1) * .08, 0, (i % 2 - .5) * .1); mk(cyl(.003, .003, .14, 4), str, g, 0, -.07, 0); mk(sauG, sM, g, 0, -.3, 0); C.sausages = C.sausages || []; C.sausages.push(g); } }
+  // carnet de bord sur la console et caisse à outils
+  { const g = grp(root, -.98, FLOOR + .6, -4.98, 0, .3, 0); mk(rbox(.18, .025, .24, .006), std({ color: 0x4b0e19, roughness: .7 }), g); mk(rbox(.16, .02, .22, .004), std({ color: 0xefe2c2, roughness: .9 }), g, .008, .005, 0); }
+  { const g = grp(root, .3, FLOOR, 5.55, 0, .3, 0); mk(rbox(.42, .18, .2, .02), std({ color: 0xb01e24, roughness: .4, metalness: .4 }), g, 0, .09, 0); mk(rbox(.3, .03, .03, .01), M.black, g, 0, .22, 0); for (const x of [-.13, .13]) mk(cyl(.01, .01, .05, 6), M.black, g, x, .2, 0); }
+  // ventilateur à pales de laiton dans le poste de pilotage
+  { const g = grp(root, .9, 1.05, -3.3, 0, -Math.PI / 2 + .5, .3); mk(rbox(.09, .12, .08, .02), M.green, g); mk(tor(.14, .006, 6, 24), M.brassDark, g, 0, 0, .09); const blades = grp(g, 0, 0, .07); for (let k = 0; k < 4; k++) mk(rbox(.05, .12, .005, .003), M.brass, blades, 0, 0, 0, .3, 0, k * Math.PI / 2).translateY(.06); C.fan = blades; }
+
+  // ombres : tout projette et reçoit, sauf la coque et les vitres
+  root.traverse(o => { if (!o.isMesh) return; o.receiveShadow = true; o.castShadow = !(o.material.transparent || o.material === M.hull || o.material.alphaTest); });
+
   // ---------------------------------------------------------------- collisions à pied (boîtes x/z en local)
   const boxes = [
     [-1.3, 1.3, -9, -4.93],        // console
@@ -380,9 +430,14 @@ export function animateSub(sub, s, dt, t) {
   lampSet('power', s.batt > 0); lampSet('lights', s.lights); lampSet('alarm', crit && Math.sin(t * 9) > 0); lampSet('surface', s.depth < 1);
   if (C.lightsToggle) C.lightsToggle.rotation.x = damp(C.lightsToggle.rotation.x, s.lights ? .5 : -.5, 18, dt);
   // lampes : légère respiration, secours en rouge si la batterie est vide
-  const base = [3, 6, 5], cols = [0xffcf96, 0xffc27a, 0xffbb70];
+  const base = [6.6, 13, 11], cols = [0xffcf96, 0xffc27a, 0xffbb70];
   sub.lights.forEach((l, i) => { l.intensity = (s.batt > 0 ? base[i] : .8) * (1 + .03 * Math.sin(t * 13 + i * 2) * Math.sin(t * 3.1 + i)); l.color.setHex(s.batt > 0 ? cols[i] : 0xff3020); });
   sub.instFill.intensity = s.batt > 0 ? .5 : 0; sub.sonGlow.intensity = s.batt > 0 ? .6 : 0;
+  if (C.fan) C.fan.rotation.z += dt * (s.batt > 0 ? 14 : 0);
+  if (C.sausages) C.sausages.forEach((g, i) => { g.rotation.z = -s.roll * .8 + Math.sin(t * 1.3 + i) * .04; g.rotation.x = s.pitch * .8 + Math.sin(t * 1.1 + i * 2) * .03; });
+  // ombres : on ne recalcule que la lampe de la pièce où l'on se trouve, une image sur trois
+  sub.shadowTick = (sub.shadowTick || 0) + 1;
+  if (sub.shadowTick % 3 === 0) { const room = s.playerZ < BULK[0] ? 0 : s.playerZ < BULK[1] ? 1 : 2; sub.lights[room].shadow.needsUpdate = true; }
 }
 
 // ---------------------------------------------------------------- écran du sonar
